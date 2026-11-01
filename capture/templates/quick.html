@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+{% block title %}Quick capture — Flashcap{% endblock %}
+
+{% block body %}
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a class="brand" href="/">
+      <span class="brand-mark">F</span>
+      flashcap
+      <span class="brand-sub">read → remember</span>
+    </a>
+    <div class="topbar-actions">
+      <a class="btn" href="/">All cards</a>
+    </div>
+  </div>
+</header>
+
+<main class="wrap quick-wrap">
+  <section>
+    <div class="quick-head">
+      <h1>Capture without the page</h1>
+      <p>
+        For PDFs, ebooks, and anything the userscript can't see. Paste the passage,
+        give it a source if you have one, then make a recall card or annotate the
+        passage in Obsidian.
+      </p>
+    </div>
+
+    <form class="panel" id="quick-form">
+      <div class="field">
+        <label for="quick-text">Passage</label>
+        <textarea id="quick-text" rows="9" placeholder="Paste the highlight or paragraph here…" autofocus required></textarea>
+      </div>
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="quick-title">Source title <span style="text-transform:none;font-weight:400">(optional)</span></label>
+          <input id="quick-title" type="text" placeholder="Paper or chapter title" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="quick-url">Source URL <span style="text-transform:none;font-weight:400">(optional)</span></label>
+          <input id="quick-url" type="url" placeholder="https://…" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="quick-front">Front</label>
+        <textarea id="quick-front" rows="2" placeholder="Question or prompt" required></textarea>
+      </div>
+
+      <div class="field">
+        <label for="quick-back">Back</label>
+        <textarea id="quick-back" rows="3" placeholder="Answer" required></textarea>
+      </div>
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="quick-category">Category</label>
+          <input id="quick-category" type="text" list="quick-categories" placeholder="other" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="quick-card-tags">Card tags</label>
+          <input id="quick-card-tags" type="text" placeholder="comma, separated" autocomplete="off">
+        </div>
+      </div>
+      <datalist id="quick-categories">
+        <option value="machine-learning"></option>
+        <option value="algorithms"></option>
+        <option value="systems"></option>
+        <option value="math"></option>
+        <option value="physics"></option>
+        <option value="neuroscience"></option>
+        <option value="programming"></option>
+        <option value="philosophy"></option>
+        <option value="history"></option>
+        <option value="economics"></option>
+        <option value="biology"></option>
+        <option value="design"></option>
+        <option value="career"></option>
+        <option value="other"></option>
+      </datalist>
+
+      <div class="quick-actions" style="margin-top:0">
+        <button class="btn btn-ghost" type="button" id="quick-suggest">✦ Suggest tags &amp; category</button>
+        <span class="hint" id="quick-suggest-status"></span>
+      </div>
+
+      <div class="field">
+        <label for="quick-hint">Why I saved this <span style="text-transform:none;font-weight:400">(optional)</span></label>
+        <input id="quick-hint" type="text" placeholder="A short note for the reading record" autocomplete="off">
+      </div>
+
+      <div class="field">
+        <label for="quick-annotation">Your annotation <span style="text-transform:none;font-weight:400">(optional)</span></label>
+        <textarea id="quick-annotation" rows="3" placeholder="What do you want to remember about this?"></textarea>
+      </div>
+
+      <div class="field">
+        <label for="quick-note-tags">Annotation tags <span style="text-transform:none;font-weight:400">(optional)</span></label>
+        <input id="quick-note-tags" type="text" placeholder="comma, separated" autocomplete="off">
+      </div>
+
+      <div class="quick-actions">
+        <button class="btn btn-primary" type="submit" id="quick-submit">Save card</button>
+        <button class="btn" type="button" id="quick-note">Save annotation</button>
+        <button class="btn" type="button" id="quick-explain">Explain</button>
+        <button class="btn" type="button" id="paste-btn">Paste clipboard</button>
+        <span class="hint"><kbd>⌘</kbd><kbd>↵</kbd> to capture</span>
+      </div>
+
+      <p class="privacy-note">
+        The LLM suggests <strong>tags/category</strong> and writes explanations.
+        The front and back are always yours; annotations are saved exactly as
+        you write them. Everything stays in <code>capture/flashcards.db</code>.
+      </p>
+
+      <div class="error-box" id="quick-error" role="alert"></div>
+
+      <div class="result" id="quick-result" aria-live="polite">
+        <div class="result-label">✓ Card saved</div>
+        <div class="front" id="result-front"></div>
+        <p class="back" id="result-back"></p>
+        <div class="tags" id="result-tags"></div>
+        <div class="warn" id="result-warn" hidden></div>
+        <div class="result-actions">
+          <a class="btn btn-primary" href="/">Open dashboard</a>
+          <a class="btn" href="/" id="result-edit">Edit</a>
+          <button class="btn btn-ghost" type="button" id="capture-another">Capture another</button>
+        </div>
+      </div>
+
+      <div class="result" id="note-result" aria-live="polite">
+        <div class="result-label">✓ Annotation saved</div>
+        <div class="note-path" id="note-path"></div>
+        <p class="privacy-note">The note contains the passage, your annotation, context, and source — not the flashcard Q/A.</p>
+        <div class="result-actions">
+          <a class="btn btn-primary" href="#" id="note-open">Open in Obsidian</a>
+          <button class="btn btn-ghost" type="button" id="note-another">Capture another</button>
+        </div>
+      </div>
+
+      <div class="result" id="explain-result" aria-live="polite">
+        <div class="result-label">✦ Explanation</div>
+        <div class="explain-text" id="explain-text"></div>
+        <p class="privacy-note">AI explanation from your configured LLM. Not saved until you save an annotation.</p>
+        <div class="result-actions">
+          <button class="btn btn-primary" type="button" id="explain-annotate">Use as annotation</button>
+          <button class="btn btn-ghost" type="button" id="explain-clear">Close</button>
+        </div>
+      </div>
+    </form>
+  </section>
+
+  <aside class="side">
+    <h2>PDFs &amp; ebooks</h2>
+    <ol>
+      <li>Select the passage in Preview, Kindle, or the Firefox PDF viewer.</li>
+      <li>Copy it with <kbd>⌘</kbd><kbd>C</kbd>.</li>
+      <li>Open this page and press <kbd>⌘</kbd><kbd>V</kbd>.</li>
+      <li>Press <kbd>⌘</kbd><kbd>↵</kbd>.</li>
+    </ol>
+    <p>You can also drag the bookmarklet below to your bookmarks bar, then click it after selecting text.</p>
+    <a class="bookmarklet" id="bookmarklet" href="#" title="Drag me to the bookmarks bar">📌 Capture highlight</a>
+    <code class="bookmarklet-code" id="bookmarklet-code"></code>
+
+    <hr>
+
+    <h2>YouTube</h2>
+    <p>
+      The userscript works on video pages. Open the transcript panel
+      (<em>⋯ → Show transcript</em>) before capturing to give the context for
+      cards and explanations.
+    </p>
+
+    <hr>
+
+    <h2>Notes vs cards</h2>
+    <p>
+      <kbd>⌘</kbd><kbd>⇧</kbd><kbd>K</kbd> opens the card editor.
+      <kbd>⌘</kbd><kbd>⇧</kbd><kbd>L</kbd> opens the annotation popup and appends
+      the highlight + your note to <code>Writing/Reading/&lt;Title&gt;.md</code>.
+      <kbd>⌘</kbd><kbd>⇧</kbd><kbd>E</kbd> asks the LLM to explain the passage.
+      Right-clicking a selection also offers <strong>Annotate in Obsidian</strong>
+      and <strong>Explain with LLM</strong>. They never share content: the note
+      keeps the passage and source; the card keeps the question and answer.
+    </p>
+
+    <hr>
+
+    <h2>Shortcut</h2>
+    <p>
+      On the web, <kbd>⌘</kbd><kbd>⇧</kbd><kbd>K</kbd> captures a card,
+      <kbd>⌘</kbd><kbd>⇧</kbd><kbd>L</kbd> opens the annotation popup, and
+      <kbd>⌘</kbd><kbd>⇧</kbd><kbd>E</kbd> explains the passage. Change them in
+      the userscript if they collide with a site.
+    </p>
+  </aside>
+</main>
+
+<footer class="footer wrap">
+  <span>Stored locally · LLM suggests tags and explains on request</span>
+  <nav>
+    <a href="/">All cards</a>
+    <a href="/export/anki.tsv">Anki TSV</a>
+    <a href="/export/markdown">Markdown</a>
+  </nav>
+  <span class="status">flashcap</span>
+</footer>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/quick.js" defer></script>
+{% endblock %}

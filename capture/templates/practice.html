@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Practice — Flashcap{% endblock %}
+
+{% block body %}
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a class="brand" href="/">
+      <span class="brand-mark">F</span>
+      flashcap
+      <span class="brand-sub">read → remember</span>
+    </a>
+    <div class="topbar-actions">
+      <a class="btn" href="/">All cards</a>
+    </div>
+  </div>
+</header>
+
+<main class="wrap practice-wrap">
+  <div class="practice-head">
+    <div>
+      <h1>Practice</h1>
+      <p class="lede">New cards first, then whatever is due. FSRS schedules for your target retention; grade honestly.</p>
+    </div>
+    <div class="practice-stats" id="practice-stats">
+      <span><strong id="stat-new">—</strong><small>new</small></span>
+      <span><strong id="stat-due">—</strong><small>due</small></span>
+      <span><strong id="stat-reviewed">—</strong><small>today</small></span>
+    </div>
+  </div>
+
+  <section id="practice-loading" class="practice-loading" aria-live="polite">
+    <span class="spinner" aria-hidden="true"></span> Loading the queue…
+  </section>
+
+  <section id="practice-card" class="practice-card" hidden>
+    <div class="practice-meta">
+      <span class="cat-badge" id="practice-category"></span>
+      <span class="practice-source" id="practice-source"></span>
+    </div>
+
+    <h1 class="practice-front" id="practice-front"></h1>
+
+    <div id="practice-answer" hidden>
+      <div class="practice-back" id="practice-back"></div>
+      <div class="tags practice-tags" id="practice-tags"></div>
+      <blockquote class="practice-quote" id="practice-quote" hidden></blockquote>
+    </div>
+
+    <div class="practice-actions" id="practice-reveal">
+      <button class="btn btn-primary" type="button" id="show-answer">Show answer <kbd>space</kbd></button>
+    </div>
+
+    <div class="practice-grades" id="practice-grades" hidden>
+      <button class="grade grade-again" type="button" data-grade="again">Again <kbd>1</kbd></button>
+      <button class="grade grade-hard" type="button" data-grade="hard">Hard <kbd>2</kbd></button>
+      <button class="grade grade-good" type="button" data-grade="good">Good <kbd>3</kbd></button>
+      <button class="grade grade-easy" type="button" data-grade="easy">Easy <kbd>4</kbd></button>
+    </div>
+  </section>
+
+  <section id="practice-done" class="practice-empty" hidden>
+    <div class="practice-done-mark">✓</div>
+    <h2>Queue clear</h2>
+    <p id="practice-done-text">Nothing is due right now.</p>
+    <div class="empty-actions">
+      <button class="btn btn-primary" type="button" id="practice-refresh">Check again</button>
+      <a class="btn" href="/">Back to cards</a>
+    </div>
+  </section>
+</main>
+
+<footer class="footer wrap">
+  <span>Reviews are stored on the Flashcap server</span>
+  <nav>
+    <a href="/">All cards</a>
+    <a href="/quick">Quick capture</a>
+    <a href="/api/review/stats">Review stats</a>
+  </nav>
+  <span class="status" id="practice-progress"></span>
+</footer>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/practice.js" defer></script>
+{% endblock %}
