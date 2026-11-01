@@ -83,6 +83,32 @@ CREATE TABLE IF NOT EXISTS note_tags (
     tag  TEXT PRIMARY KEY,
     uses INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS reading_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    url         TEXT,
+    url_key     TEXT NOT NULL UNIQUE,
+    title       TEXT,
+    site        TEXT,
+    description TEXT,
+    source      TEXT NOT NULL DEFAULT 'telegram',
+    chat_id     TEXT,
+    message_id  INTEGER,
+    status      TEXT NOT NULL DEFAULT 'unread'
+                CHECK(status IN ('unread', 'reading', 'done', 'dropped')),
+    saved_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_reading_status ON reading_items(status);
+CREATE INDEX IF NOT EXISTS idx_reading_saved  ON reading_items(saved_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reading_site   ON reading_items(site);
+
+CREATE TABLE IF NOT EXISTS ingest_state (
+    key        TEXT PRIMARY KEY,
+    value      TEXT,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
 """
 
 _COLUMN_ADDITIONS = [
@@ -105,6 +131,8 @@ _COLUMN_ADDITIONS = [
 ]
 
 EDITABLE_FIELDS = {"front", "back", "category", "tags", "quote", "hint"}
+
+READING_STATUSES = ("unread", "reading", "done", "dropped")
 
 
 def init_db(path: Optional[str] = None) -> None:
@@ -682,8 +710,210 @@ def tag_vocabulary(limit: int = 40) -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# Reading list
+# ---------------------------------------------------------------------------
+
+def row_to_reading_item(row: sqlite3.Row) -> dict[str, Any]:
+    return dict(row)
+
+
+def get_reading_item(item_id: int) -> Optional[dict[str, Any]]:
+    row = get_db().execute(
+        "SELECT * FROM reading_items WHERE id = ?", (item_id,)
+    ).fetchone()
+    return row_to_reading_item(row) if row else None
+
+
+def get_reading_item_by_key(url_key: str) -> Optional[dict[str, Any]]:
+    row = get_db().execute(
+        "SELECT * FROM reading_items WHERE url_key = ?", (url_key,)
+    ).fetchone()
+    return row_to_reading_item(row) if row else None
+
+
+def upsert_reading_item(data: dict[str, Any]) -> dict[str, Any]:
+    """Insert one saved item, or fill in missing fields on an identical one.
+
+    Re-ingestion must never undo a user's status, so the conflict update only
+    touches source-derived columns and only where the stored value is empty.
+    """
+    url_key = str(data.get("url_key") or "").strip()
+    if not url_key:
+        raise ValueError("Reading item needs a url_key")
+
+    status = str(data.get("status") or "unread").strip().lower()
+    if status not in READING_STATUSES:
+        status = "unread"
+
+    db = get_db()
+    db.execute(
+        """
+        INSERT INTO reading_items (
+            url, url_key, title, site, description, source, chat_id,
+            message_id, status, saved_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))
+        ON CONFLICT(url_key) DO UPDATE SET
+            title = COALESCE(NULLIF(reading_items.title, ''), excluded.title),
+            site = COALESCE(NULLIF(reading_items.site, ''), excluded.site),
+            description = COALESCE(
+                NULLIF(reading_items.description, ''), excluded.description
+            ),
+            updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+        """,
+        (
+            _trim(data.get("url"), 2000),
+            url_key,
+            _trim(data.get("title"), 400),
+            _trim(data.get("site"), 200),
+            _trim(data.get("description"), 4000),
+            _trim(data.get("source"), 20) or "telegram",
+            _trim(data.get("chat_id"), 40),
+            _int_or_none(data.get("message_id")),
+            status,
+            _trim(data.get("saved_at"), 40),
+        ),
+    )
+    db.commit()
+    return get_reading_item_by_key(url_key) or {}
+
+
+def update_reading_item(
+    item_id: int, fields: dict[str, Any]
+) -> Optional[dict[str, Any]]:
+    """Apply a user edit. Returns ``None`` when the item does not exist."""
+    updates: list[str] = []
+    params: list[Any] = []
+
+    if "status" in fields:
+        status = str(fields.get("status") or "").strip().lower()
+        if status not in READING_STATUSES:
+            raise ValueError(
+                "status must be one of: " + ", ".join(READING_STATUSES)
+            )
+        updates.append("status = ?")
+        params.append(status)
+
+    if "title" in fields:
+        updates.append("title = ?")
+        params.append(_trim(fields.get("title"), 400))
+
+    if not updates:
+        return get_reading_item(item_id)
+
+    updates.append("updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')")
+    params.append(item_id)
+
+    db = get_db()
+    cursor = db.execute(
+        f"UPDATE reading_items SET {', '.join(updates)} WHERE id = ?",  # noqa: S608
+        params,
+    )
+    db.commit()
+    if cursor.rowcount == 0:
+        return None
+    return get_reading_item(item_id)
+
+
+def delete_reading_item(item_id: int) -> bool:
+    db = get_db()
+    cursor = db.execute("DELETE FROM reading_items WHERE id = ?", (item_id,))
+    db.commit()
+    return cursor.rowcount > 0
+
+
+def list_reading_items(
+    query: str = "",
+    status: str = "",
+    site: str = "",
+    limit: int = 1000,
+) -> list[dict[str, Any]]:
+    """Return the newest saved items first, optionally filtered."""
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    query = (query or "").strip()
+    if query:
+        like = f"%{query}%"
+        clauses.append(
+            "(title LIKE ? OR site LIKE ? OR description LIKE ? OR url LIKE ?)"
+        )
+        params.extend([like] * 4)
+
+    status = (status or "").strip().lower()
+    if status in READING_STATUSES:
+        clauses.append("status = ?")
+        params.append(status)
+
+    site = (site or "").strip().lower()
+    if site:
+        clauses.append("LOWER(site) = ?")
+        params.append(site)
+
+    sql = "SELECT * FROM reading_items"
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY saved_at DESC, id DESC LIMIT ?"
+    params.append(max(1, min(int(limit or 1000), 2000)))
+
+    return [row_to_reading_item(r) for r in get_db().execute(sql, params).fetchall()]
+
+
+def reading_counts() -> dict[str, int]:
+    """Counts per status plus the total, for the library filters."""
+    counts = {status: 0 for status in READING_STATUSES}
+    for row in get_db().execute(
+        "SELECT status, COUNT(*) AS n FROM reading_items GROUP BY status"
+    ).fetchall():
+        if row["status"] in counts:
+            counts[row["status"]] = int(row["n"])
+    counts["total"] = sum(
+        counts[status] for status in READING_STATUSES
+    )
+    return counts
+
+
+def reading_sites(limit: int = 30) -> list[dict[str, Any]]:
+    """Sites with the most saved items, for the site filter."""
+    rows = get_db().execute(
+        "SELECT site, COUNT(*) AS n FROM reading_items "
+        "WHERE site IS NOT NULL AND site != '' "
+        "GROUP BY site ORDER BY n DESC, site ASC LIMIT ?",
+        (max(1, min(int(limit or 30), 200)),),
+    ).fetchall()
+    return [{"site": row["site"], "count": int(row["n"])} for row in rows]
+
+
+def get_state(key: str, default: str = "") -> str:
+    row = get_db().execute(
+        "SELECT value FROM ingest_state WHERE key = ?", (key,)
+    ).fetchone()
+    return str(row["value"]) if row and row["value"] is not None else default
+
+
+def set_state(key: str, value: str) -> None:
+    db = get_db()
+    db.execute(
+        """
+        INSERT INTO ingest_state (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+        """,
+        (key, value),
+    )
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _int_or_none(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
 
 def _trim(value: Any, limit: int) -> Optional[str]:
     if value is None:
