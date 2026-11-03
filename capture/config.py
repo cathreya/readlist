@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TypedDict
 
 CAPTURE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CAPTURE_DIR.parent
@@ -114,6 +115,39 @@ def get_db_path() -> str:
     if configured:
         return str(Path(configured).expanduser())
     return str(CAPTURE_DIR / "flashcards.db")
+
+
+class TelegramConfig(TypedDict):
+    enabled: bool
+    token: str
+    chat_ids: tuple[str, ...]
+    timeout: int
+
+
+def get_telegram_config() -> TelegramConfig:
+    """Ingestion stays off until a bot token exists.
+
+    A fresh checkout and the test suite never touch the network.
+    """
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    raw_chats = os.getenv("TELEGRAM_CHAT_IDS", "")
+    chat_ids = tuple(part.strip() for part in raw_chats.split(",") if part.strip())
+    poll = os.getenv("FLASHCAP_TELEGRAM_POLL", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    try:
+        timeout = int(os.getenv("FLASHCAP_TELEGRAM_TIMEOUT", "25"))
+    except ValueError:
+        timeout = 25
+    return {
+        "enabled": bool(token) and poll,
+        "token": token,
+        "chat_ids": chat_ids,
+        "timeout": max(1, min(timeout, 50)),
+    }
 
 
 def get_obsidian_config() -> dict[str, object]:
