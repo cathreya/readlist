@@ -943,6 +943,32 @@ def set_reading_archive_error(
     return get_reading_item(item_id) if cursor.rowcount else None
 
 
+def reset_reading_archive(
+    item_id: int, message_id: Optional[int] = None
+) -> Optional[dict[str, Any]]:
+    """Return a done item to the queue and forget its forwarded copy."""
+    fields = [
+        "status = 'unread'",
+        "archived_at = NULL",
+        "archive_message_id = NULL",
+        "archive_error = NULL",
+        "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
+    ]
+    params: list[Any] = []
+    if message_id:
+        fields.append("message_id = ?")
+        params.append(int(message_id))
+    params.append(item_id)
+
+    db = get_db()
+    cursor = db.execute(
+        f"UPDATE reading_items SET {', '.join(fields)} WHERE id = ?",  # noqa: S608
+        params,
+    )
+    db.commit()
+    return get_reading_item(item_id) if cursor.rowcount else None
+
+
 def reading_counts() -> dict[str, int]:
     """Counts per status plus the total, for the library filters."""
     counts = {status: 0 for status in READING_STATUSES}

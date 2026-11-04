@@ -350,6 +350,123 @@ def test_done_without_done_chat_stays_done(app, client, monkeypatch):
     assert body["archive"]["skipped"] == "TELEGRAM_DONE_CHAT_ID is not set"
 
 
+def archived_item(app, key="https://example.com/u", *, delete_failed=False):
+    with app.app_context():
+        item = store.upsert_reading_item(
+            {
+                "url": key,
+                "url_key": key,
+                "chat_id": "-100",
+                "message_id": 5,
+            }
+        )
+        store.update_reading_item(item["id"], {"status": "done"})
+        store.mark_reading_archived(item["id"], 77)
+        if delete_failed:
+            store.set_reading_archive_error(item["id"], "refused")
+        return store.get_reading_item(item["id"])
+
+
+def test_undo_reposts_and_removes_forward(app, client, monkeypatch):
+    item = archived_item(app)
+    calls = {}
+
+    def fake_send(token, chat_id, text):
+        calls["send"] = (token, chat_id, text)
+        return {"message_id": 99}
+
+    def fake_delete(token, chat_id, message_id):
+        calls["delete"] = (token, chat_id, message_id)
+
+    monkeypatch.setattr(telegram, "get_telegram_config", done_config)
+    monkeypatch.setattr(telegram, "send_message", fake_send)
+    monkeypatch.setattr(telegram, "delete_message", fake_delete)
+
+    response = client.post(f"/api/library/{item['id']}/undo")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["undo"] == {
+        "ok": True,
+        "repost": True,
+        "unforwarded": True,
+        "message_id": 99,
+    }
+    assert calls["send"] == ("token", "-100", "https://example.com/u")
+    assert calls["delete"] == ("token", "-200", 77)
+    assert body["item"]["status"] == "unread"
+    assert body["item"]["message_id"] == 99
+    assert body["item"]["archived_at"] is None
+    assert body["item"]["archive_message_id"] is None
+
+
+def test_undo_skips_repost_when_the_source_survived(app, client, monkeypatch):
+    item = archived_item(app, delete_failed=True)
+    calls = {}
+
+    def fake_send(*_args):
+        calls["send"] = True
+        return {"message_id": 99}
+
+    def fake_delete(token, chat_id, message_id):
+        calls["delete"] = (token, chat_id, message_id)
+
+    monkeypatch.setattr(telegram, "get_telegram_config", done_config)
+    monkeypatch.setattr(telegram, "send_message", fake_send)
+    monkeypatch.setattr(telegram, "delete_message", fake_delete)
+
+    response = client.post(f"/api/library/{item['id']}/undo")
+
+    assert response.status_code == 200
+    assert "send" not in calls
+    assert calls["delete"] == ("token", "-200", 77)
+    assert response.get_json()["item"]["message_id"] == 5
+
+
+def test_undo_unarchived_done_only_resets_status(app, client):
+    with app.app_context():
+        item = store.upsert_reading_item(
+            {"url": "https://example.com/v", "url_key": "https://example.com/v"}
+        )
+        store.update_reading_item(item["id"], {"status": "done"})
+
+    response = client.post(f"/api/library/{item['id']}/undo")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["undo"] == {"ok": True, "skipped": "not archived"}
+    assert body["item"]["status"] == "unread"
+
+
+def test_undo_rejects_items_that_are_not_done(app, client):
+    with app.app_context():
+        item = store.upsert_reading_item(
+            {"url": "https://example.com/w", "url_key": "https://example.com/w"}
+        )
+
+    response = client.post(f"/api/library/{item['id']}/undo")
+
+    assert response.status_code == 409
+
+
+def test_undo_send_failure_keeps_the_item_done(app, client, monkeypatch):
+    item = archived_item(app)
+
+    def boom(*_args):
+        raise telegram.TelegramError("not enough rights")
+
+    monkeypatch.setattr(telegram, "get_telegram_config", done_config)
+    monkeypatch.setattr(telegram, "send_message", boom)
+
+    response = client.post(f"/api/library/{item['id']}/undo")
+
+    assert response.status_code == 502
+    with app.app_context():
+        stored = store.get_reading_item(item["id"])
+        assert stored["status"] == "done"
+        assert stored["archived_at"] is not None
+
+
 # ---------------------------------------------------------------------------
 # Telegram ingestion
 # ---------------------------------------------------------------------------

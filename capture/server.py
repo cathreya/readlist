@@ -359,6 +359,24 @@ def create_app(db_path: str | None = None) -> Flask:
             return jsonify({"error": "Item not found"}), 404
         return jsonify({"deleted": True, "id": item_id})
 
+    @app.post("/api/library/<int:item_id>/undo")
+    def library_undo(item_id: int):
+        item = store.get_reading_item(item_id)
+        if item is None:
+            return jsonify({"error": "Item not found"}), 404
+        if item["status"] != "done":
+            return jsonify({"error": "Only a done item can be undone"}), 409
+
+        undo = {"ok": True, "skipped": "not archived"}
+        if item.get("archived_at"):
+            try:
+                undo = telegram.undo_done(item)
+            except telegram.TelegramError as exc:
+                return jsonify({"error": f"Could not undo: {exc}"}), 502
+
+        item = store.reset_reading_archive(item_id, undo.get("message_id"))
+        return jsonify({"item": item, "undo": undo})
+
     # Quiz me (scoped to what the reader has read)
     # ------------------------------------------------------------------
     @app.post("/api/quiz/start")

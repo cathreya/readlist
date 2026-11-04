@@ -72,6 +72,44 @@ def delete_message(token: str, chat_id: str, message_id: int) -> None:
     _call(token, "deleteMessage", {"chat_id": chat_id, "message_id": message_id})
 
 
+def send_message(token: str, chat_id: str, text: str) -> dict:
+    return _call(token, "sendMessage", {"chat_id": chat_id, "text": text})
+
+
+def undo_done(item: dict) -> dict:
+    """Put a finished item back: repost the source, remove the forwarded copy.
+
+    When the delete had failed, the source still exists, so only the forwarded
+    copy is removed. A failed repost raises, and the caller keeps the item done.
+    """
+    config = get_telegram_config()
+    token = config["token"]
+    done_chat_id = config["done_chat_id"]
+    if not token:
+        raise TelegramError("TELEGRAM_BOT_TOKEN is not set")
+    if not done_chat_id:
+        raise TelegramError("TELEGRAM_DONE_CHAT_ID is not set")
+
+    result = {"ok": True, "repost": False, "unforwarded": False}
+
+    if not item.get("archive_error"):
+        text = str(item.get("url") or item.get("description") or "").strip()
+        if not text:
+            raise TelegramError("Nothing to repost")
+        sent = send_message(token, str(item["chat_id"]), text)
+        result["message_id"] = int(sent["message_id"])
+        result["repost"] = True
+
+    archive_id = item.get("archive_message_id")
+    if archive_id:
+        try:
+            delete_message(token, done_chat_id, int(archive_id))
+            result["unforwarded"] = True
+        except TelegramError as exc:
+            result["error"] = str(exc)
+    return result
+
+
 def archive_done(item: dict) -> dict:
     """Forward a finished item to the done chat, then delete the original.
 

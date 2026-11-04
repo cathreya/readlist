@@ -42,7 +42,6 @@
   const NEXT_ACTION = {
     unread: { label: 'Start', to: 'reading' },
     reading: { label: 'Done', to: 'done' },
-    done: { label: 'Reopen', to: 'unread' },
     dropped: { label: 'Restore', to: 'unread' },
   };
 
@@ -293,7 +292,17 @@
 
     const next = NEXT_ACTION[item.status];
     const actions = h('div', { class: 'lib-actions' });
-    if (next) {
+    if (item.status === 'done') {
+      actions.append(
+        h('button', {
+          type: 'button',
+          class: 'btn btn-ghost',
+          'data-action': 'undo',
+          'data-id': item.id,
+          text: 'Undo',
+        })
+      );
+    } else if (next) {
       actions.append(
         h('button', {
           type: 'button',
@@ -380,6 +389,27 @@
     const button = event.target.closest('[data-action]');
     if (!button) return;
     const id = button.dataset.id;
+
+    if (button.dataset.action === 'undo') {
+      if (
+        !window.confirm(
+          'Undo this? The link goes back to the channel and leaves the done list.'
+        )
+      ) {
+        return;
+      }
+      try {
+        const result = await api(`/api/library/${id}/undo`, { method: 'POST' });
+        if (result.undo && result.undo.error) {
+          notice(result.undo.error, 'err');
+        }
+        await load();
+      } catch (error) {
+        notice(error.message, 'err');
+        await load();
+      }
+      return;
+    }
 
     if (button.dataset.action === 'status') {
       try {
