@@ -1,6 +1,6 @@
 # Flashcap
 
-A lighter-weight companion to Lecture Today: **press a shortcut while reading, write your own flashcard**, then practice it from a phone or laptop.
+A local reading library and flashcard deck: **press a shortcut while reading, write your own flashcard**, then practice it from a phone or laptop. Links saved in Telegram land in the same library.
 
 `⌘⇧K` on any Firefox page captures the selected text (or the paragraph you're looking at), the surrounding context, the section heading, and the source metadata, then opens a **New flashcard** editor. **You write the front and back.** The LLM reads the passage and suggests a **category and tags** (both editable); it never writes the question or answer. The card is saved as entered, with Undo and Edit in the toast.
 
@@ -12,7 +12,7 @@ You can also select text, right-click, and choose **Annotate in Obsidian** to op
 
 `⌘⇧Q` is **Quiz me**: it asks one reasoning question about a passage above your current scroll position, then grades your written answer. A wrong answer earns a hint and the same question is asked again until the answer is satisfactory. Passages you have not been quizzed on come first; older passages return for recall. Quiz questions are never written as cards.
 
-The original Lecture Today app is untouched. This lives in `capture/`, has its own SQLite database, and adds `fsrs` to the project dependencies for scheduling.
+This lives in `capture/`, has its own SQLite database, and adds `fsrs` to the project dependencies for scheduling.
 
 The reference deployment runs on **hermes** (Tailscale), with the Mac acting only as the Obsidian note sink:
 
@@ -148,6 +148,22 @@ The userscript works on video pages. For a card about what's being said *right n
 - Press `n` to jump to quick capture.
 
 The list is newest-first. All filtering is client-side, so it stays fast for a personal collection.
+
+---
+
+## Reading list
+
+`/library` is the shared backlog: every link you saved in the Telegram chat, newest first. It is the input side of the deck, and the one place to see what is still unread. The page loads 200 rows at a time and appends with **Load more**.
+
+- **Telegram.** Create a bot with @BotFather and make it an admin in the channel. Admin rights are what let it read every post and delete a finished message. Put the token in `.env` as `TELEGRAM_BOT_TOKEN`. The server long-polls `getUpdates` on a background thread, so there is no webhook and no new public port. Set `TELEGRAM_CHAT_IDS` to accept only your channel.
+- **Manual.** Paste a link into the box on `/library`.
+- **Backfill.** `python -m capture.backfill` parses the Telegram export (`messages.html` by default) and adds every link and note. It reads the file directly, and a second run adds nothing.
+
+**Done list.** Set `TELEGRAM_DONE_CHAT_ID` to your done-list chat. Marking an item `done` forwards the original Telegram message there, then deletes it from the source channel. The forward happens first: if it fails, the item stays in its previous status. A failed delete leaves the item archived and marks the row with an `archive issue` note. Items from the export have no live message, so they only change status locally.
+
+Links are deduplicated by a canonical URL: tracking parameters, fragments, `www`, and trailing slashes are stripped. Replaying a Telegram update fills missing titles, sites, and descriptions; it never changes a status you set. A message with several links becomes several rows. A text-only message is saved as a note.
+
+Statuses: `unread`, `reading`, `done`, `dropped`.
 
 ---
 
@@ -322,6 +338,12 @@ FLASHCAP_OBSIDIAN_FOLDER=Reading
 FLASHCAP_OBSIDIAN_MODE=queue
 FLASHCAP_NOTE_CONTEXT=0      # 1 = include a 400-char context excerpt
 FLASHCAP_TIMEZONE=Europe/Dublin   # day headings use this timezone
+
+TELEGRAM_BOT_TOKEN=...       # enables the reading-list poller
+TELEGRAM_CHAT_IDS=-100...     # optional allowlist, comma separated
+TELEGRAM_DONE_CHAT_ID=-100... # forward finished messages here, then delete them
+FLASHCAP_TELEGRAM_POLL=1      # 0 to run the server without the poller
+FLASHCAP_TELEGRAM_TIMEOUT=25  # long-poll seconds
 ```
 
 The server speaks the Anthropic Messages API (`POST {base_url}/v1/messages`). Anything that exposes that shape works, including Anthropic itself and DeepSeek's compatibility endpoint. Reasoning models that return `thinking` blocks before the text block are supported.
@@ -385,7 +407,12 @@ All endpoints are unauthenticated. On hermes the server binds loopback and Tails
 | `PATCH` | `/api/cards/:id` | Edit `front`, `back`, `category`, `tags`, `quote`, `hint` |
 | `DELETE` | `/api/cards/:id` | Delete a card |
 | `GET` | `/api/meta` | Counts, categories, tags, LLM status |
-| `GET` | `/api/health` | Health + card count |
+| `GET` | `/api/health` | Health, card count, Telegram poller status |
+| `GET` | `/library` | Reading-list page |
+| `GET` | `/api/library` | List saved items (`?q=`, `?status=`, `?site=`, `?limit=`, `?offset=`) |
+| `POST` | `/api/library` | Save a link manually |
+| `PATCH` | `/api/library/:id` | Set `status` or `title` |
+| `DELETE` | `/api/library/:id` | Remove an item |
 | `GET` | `/practice` | Mobile Practice page |
 | `GET` | `/api/review/next` | Next new/due card + review stats |
 | `POST` | `/api/review/:id` | Grade a card (`again` / `hard` / `good` / `easy`) |

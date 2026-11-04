@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import html
 import os
+import threading
 from datetime import date
 from urllib.parse import urlparse
 
@@ -23,8 +24,15 @@ from flask import (
     request,
 )
 
-from . import __version__, obsidian, quiz, store
-from .config import get_db_path, get_host, get_llm_config, get_port, get_public_url
+from . import __version__, library, obsidian, quiz, store, telegram
+from .config import (
+    get_db_path,
+    get_host,
+    get_llm_config,
+    get_port,
+    get_public_url,
+    get_telegram_config,
+)
 from .llm import (
     LLMError,
     explain_passage,
@@ -91,6 +99,10 @@ def create_app(db_path: str | None = None) -> Flask:
     @app.get("/practice")
     def practice():
         return render_template("practice.html")
+
+    @app.get("/library")
+    def library_page():
+        return render_template("library.html")
 
     # ------------------------------------------------------------------
     # Capture API
@@ -227,6 +239,7 @@ def create_app(db_path: str | None = None) -> Flask:
     @app.get("/api/health")
     def health():
         config = get_llm_config()
+        telegram_config = get_telegram_config()
         return jsonify(
             {
                 "ok": True,
@@ -234,10 +247,102 @@ def create_app(db_path: str | None = None) -> Flask:
                 "cards": store.metadata()["total"],
                 "llm_configured": bool(config["api_key"]),
                 "model": config["model"],
+                "telegram": {
+                    "enabled": bool(telegram_config["enabled"]),
+                    "offset": store.get_state("telegram_offset", "0"),
+                },
             }
         )
 
     # ------------------------------------------------------------------
+    # Reading library
+    # ------------------------------------------------------------------
+    @app.get("/api/library")
+    def library_index():
+        query = request.args.get("q", "")
+        status = request.args.get("status", "")
+        site = request.args.get("site", "")
+        limit = _int_arg("limit", 200)
+        offset = max(0, _int_arg("offset", 0))
+
+        items = store.list_reading_items(
+            query=query,
+            status=status,
+            site=site,
+            limit=limit,
+            offset=offset,
+        )
+        total = store.count_reading_items(query, status, site)
+        counts = store.reading_counts()
+        return jsonify(
+            {
+                "items": items,
+                "count": len(items),
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+                "has_more": offset + len(items) < total,
+                "counts": counts,
+                "sites": store.reading_sites(),
+            }
+        )
+
+    @app.post("/api/library")
+    def library_add():
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"error": "Expected a JSON object"}), 400
+
+        key = library.canonical_key(data.get("url"))
+        if not key:
+            return jsonify({"error": "Enter a valid http(s) link"}), 400
+
+        item = store.upsert_reading_item(
+            {
+                "url": key,
+                "url_key": key,
+                "title": _text(data.get("title"), 400),
+                "site": library.host_of(key),
+                "source": library.SOURCE_MANUAL,
+            }
+        )
+        return jsonify({"item": item}), 201
+
+    @app.patch("/api/library/<int:item_id>")
+    def library_update(item_id: int):
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"error": "Expected a JSON object"}), 400
+
+        previous = store.get_reading_item(item_id)
+        if previous is None:
+            return jsonify({"error": "Item not found"}), 404
+
+        fields = {key: data[key] for key in ("status", "title") if key in data}
+        try:
+            item = store.update_reading_item(item_id, fields)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        if item is None:
+            return jsonify({"error": "Item not found"}), 404
+
+        archive = None
+        if item["status"] == "done" and previous["status"] != "done":
+            try:
+                archive = telegram.archive_done(item)
+            except telegram.TelegramError as exc:
+                store.update_reading_item(item_id, {"status": previous["status"]})
+                return jsonify({"error": f"Could not move it to the done chat: {exc}"}), 502
+            item = store.get_reading_item(item_id)
+
+        return jsonify({"item": item, "archive": archive})
+
+    @app.delete("/api/library/<int:item_id>")
+    def library_delete(item_id: int):
+        if not store.delete_reading_item(item_id):
+            return jsonify({"error": "Item not found"}), 404
+        return jsonify({"deleted": True, "id": item_id})
+
     # Quiz me (scoped to what the reader has read)
     # ------------------------------------------------------------------
     @app.post("/api/quiz/start")
@@ -779,6 +884,17 @@ def main() -> None:
     else:
         print("  llm:      not configured (captures will be saved unclassified)")
     print(f"  userscript: http://{shown}:{port}/userscript.user.js")
+    telegram_config = get_telegram_config()
+    if telegram_config["enabled"]:
+        threading.Thread(
+            target=telegram.run_forever,
+            args=(app,),
+            name="telegram-poll",
+            daemon=True,
+        ).start()
+        print("  telegram:  polling for reading-list links")
+    else:
+        print("  telegram:  not configured (set TELEGRAM_BOT_TOKEN)")
     app.run(host=host, port=port, debug=False, threaded=True, use_reloader=False)
 
 

@@ -96,6 +96,9 @@ CREATE TABLE IF NOT EXISTS reading_items (
     message_id  INTEGER,
     status      TEXT NOT NULL DEFAULT 'unread'
                 CHECK(status IN ('unread', 'reading', 'done', 'dropped')),
+    archived_at TEXT,
+    archive_message_id INTEGER,
+    archive_error TEXT,
     saved_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
@@ -152,6 +155,9 @@ _COLUMN_ADDITIONS = [
     "ALTER TABLE reviews ADD COLUMN difficulty REAL",
     "ALTER TABLE reviews ADD COLUMN srs_state INTEGER",
     "ALTER TABLE obsidian_notes ADD COLUMN last_day TEXT",
+    "ALTER TABLE reading_items ADD COLUMN archived_at TEXT",
+    "ALTER TABLE reading_items ADD COLUMN archive_message_id INTEGER",
+    "ALTER TABLE reading_items ADD COLUMN archive_error TEXT",
 ]
 
 EDITABLE_FIELDS = {"front", "back", "category", "tags", "quote", "hint"}
@@ -845,13 +851,9 @@ def delete_reading_item(item_id: int) -> bool:
     return cursor.rowcount > 0
 
 
-def list_reading_items(
-    query: str = "",
-    status: str = "",
-    site: str = "",
-    limit: int = 1000,
-) -> list[dict[str, Any]]:
-    """Return the newest saved items first, optionally filtered."""
+def _reading_where(
+    query: str = "", status: str = "", site: str = ""
+) -> tuple[str, list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
 
@@ -873,13 +875,65 @@ def list_reading_items(
         clauses.append("LOWER(site) = ?")
         params.append(site)
 
-    sql = "SELECT * FROM reading_items"
-    if clauses:
-        sql += " WHERE " + " AND ".join(clauses)
-    sql += " ORDER BY saved_at DESC, id DESC LIMIT ?"
-    params.append(max(1, min(int(limit or 1000), 2000)))
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    return where, params
+
+
+def list_reading_items(
+    query: str = "",
+    status: str = "",
+    site: str = "",
+    limit: int = 200,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """Return the newest saved items first, optionally filtered and paged."""
+    where, params = _reading_where(query, status, site)
+    sql = (
+        "SELECT * FROM reading_items"
+        + where
+        + " ORDER BY saved_at DESC, id DESC LIMIT ? OFFSET ?"
+    )
+    params.append(max(1, min(int(limit or 200), 500)))
+    params.append(max(0, int(offset or 0)))
 
     return [row_to_reading_item(r) for r in get_db().execute(sql, params).fetchall()]
+
+
+def count_reading_items(query: str = "", status: str = "", site: str = "") -> int:
+    where, params = _reading_where(query, status, site)
+    row = get_db().execute(
+        "SELECT COUNT(*) FROM reading_items" + where, params
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def mark_reading_archived(item_id: int, message_id: int) -> Optional[dict[str, Any]]:
+    """Record the forwarded copy and clear any earlier archive error."""
+    db = get_db()
+    cursor = db.execute(
+        """
+        UPDATE reading_items
+        SET archived_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+            archive_message_id = ?,
+            archive_error = NULL
+        WHERE id = ?
+        """,
+        (message_id, item_id),
+    )
+    db.commit()
+    return get_reading_item(item_id) if cursor.rowcount else None
+
+
+def set_reading_archive_error(
+    item_id: int, message: str
+) -> Optional[dict[str, Any]]:
+    db = get_db()
+    cursor = db.execute(
+        "UPDATE reading_items SET archive_error = ? WHERE id = ?",
+        (_trim(message, 500), item_id),
+    )
+    db.commit()
+    return get_reading_item(item_id) if cursor.rowcount else None
 
 
 def reading_counts() -> dict[str, int]:

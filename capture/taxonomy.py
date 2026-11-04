@@ -1,8 +1,7 @@
 """Category and tag vocabulary.
 
 Categories are intentionally broad and low-cardinality; tags carry the specific
-concepts. The list mirrors Lecture Today's topic vocabulary so the two tools
-feel like one system.
+concepts. Cards, notes, and the reading list share the same list.
 """
 
 from __future__ import annotations
