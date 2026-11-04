@@ -97,6 +97,12 @@
   if (prefill.url) urlEl.value = prefill.url.slice(0, 2000);
   if (prefill.hint) hintEl.value = prefill.hint.slice(0, 500);
 
+  // The passage arrived in the query string. Drop it from the address bar so
+  // it does not linger in browser history or leak through a copied link.
+  if (location.search) {
+    history.replaceState(null, '', location.pathname);
+  }
+
   if (prefill.text) {
     textEl.focus();
     textEl.setSelectionRange(textEl.value.length, textEl.value.length);

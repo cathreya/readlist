@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Flashcap — capture a flashcard
 // @namespace    local.flashcap
-// @version      1.9.1
-// @description  Cmd/Ctrl+Shift+K write a card · Shift+L annotate (LLM reuses tags) · Shift+E explain.
+// @version      1.10.0
+// @description  Cmd/Ctrl+Shift+K write a card · Shift+L annotate (LLM reuses tags) · Shift+E explain · Shift+Q quiz me on what you've read.
 // @author       local
 // @match        *://*/*
 // @run-at       document-idle
@@ -23,6 +23,7 @@
   const HOTKEY_LABEL = IS_MAC ? '⌘⇧K' : 'Ctrl+Shift+K';
   const NOTE_LABEL = IS_MAC ? '⌘⇧L' : 'Ctrl+Shift+L';
   const EXPLAIN_LABEL = IS_MAC ? '⌘⇧E' : 'Ctrl+Shift+E';
+  const QUIZ_LABEL = IS_MAC ? '⌘⇧Q' : 'Ctrl+Shift+Q';
   const MAX_CONTEXT = 7000;
   // Shift+right-click always falls through to Firefox's native menu.
   const ENABLE_CONTEXT_MENU = true;
@@ -314,6 +315,21 @@
     }
   };
 
+  const sourceMeta = () => ({
+    title: clip(
+      metaContent('og:title', 'twitter:title') ||
+        textOf(document.querySelector('h1')) ||
+        clean(document.title),
+      400
+    ),
+    url: cleanUrl(
+      (document.querySelector('link[rel="canonical"]') || {}).href || location.href
+    ),
+    site:
+      metaContent('og:site_name', 'application-name') ||
+      location.hostname.replace(/^www\./, ''),
+  });
+
   const isYouTube = () =>
     /(^|\.)youtube\.com$/i.test(location.hostname) ||
     /(^|\.)youtu\.be$/i.test(location.hostname);
@@ -357,16 +373,10 @@
     let focus = clip(textOf(block), 2400);
     let context = contextAround(root, block, focus, selection);
 
-    const title =
-      metaContent('og:title', 'twitter:title') ||
-      textOf(document.querySelector('h1')) ||
-      clean(document.title);
-    const url = cleanUrl(
-      (document.querySelector('link[rel="canonical"]') || {}).href || location.href
-    );
-    const site =
-      metaContent('og:site_name', 'application-name') ||
-      location.hostname.replace(/^www\./, '');
+    const meta = sourceMeta();
+    const title = meta.title;
+    const url = meta.url;
+    const site = meta.site;
     const author = metaContent(
       'author',
       'article:author',
@@ -405,6 +415,50 @@
       description: clip(description, 1500),
       source_type: sourceType,
       lang: document.documentElement.lang || '',
+    };
+  };
+
+  // -------------------------------------------------------------------
+  // Reading position for the quiz
+  // -------------------------------------------------------------------
+  const QUIZ_BLOCK_SELECTOR = 'p, li, blockquote, dd, pre, figcaption';
+  const QUIZ_MIN_CHARS = 200;
+  const QUIZ_MAX_UNITS = 40;
+  const QUIZ_UNIT_CHARS = 1400;
+
+  // FNV-1a 32-bit: the same passage on the same URL keeps the same identity
+  // across visits, so the server can remember what was already quizzed.
+  const unitKey = (text) => {
+    let hash = 2166136261;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return `u${hash.toString(36)}`;
+  };
+
+  const quizUnits = () => {
+    const root = articleRoot(null) || document.body;
+    const read = [];
+    let total = 0;
+
+    for (const block of root.querySelectorAll(QUIZ_BLOCK_SELECTOR)) {
+      if (inPageChrome(block)) continue;
+      const text = clip(textOf(block), QUIZ_UNIT_CHARS);
+      if (text.length < QUIZ_MIN_CHARS) continue;
+      total += 1;
+      if (block.getBoundingClientRect().top >= window.innerHeight) continue;
+      read.push({ block, text });
+    }
+
+    const kept = read.slice(-QUIZ_MAX_UNITS);
+    return {
+      units: kept.map(({ block, text }) => ({
+        key: unitKey(text),
+        text,
+        heading: headingTrail(root, block),
+      })),
+      total: Math.max(total, read.length),
     };
   };
 
@@ -622,6 +676,62 @@
       color: #a9e0b7;
     }
     button.act:disabled { opacity: .55; cursor: wait; }
+
+    .quiz-progress {
+      color: #8b9182;
+      font-size: 10.5px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin-top: 6px;
+    }
+    .quiz-question {
+      font-size: 15px;
+      line-height: 1.5;
+      font-weight: 600;
+      color: #f5f2e9;
+      margin: 10px 0 2px;
+      overflow-wrap: anywhere;
+    }
+    .quiz-feedback {
+      font-size: 11.5px;
+      margin-top: 9px;
+      padding: 6px 8px;
+      border-radius: 7px;
+      background: #23251e;
+      border: 1px solid #34382c;
+      color: #c9cec0;
+      overflow-wrap: anywhere;
+    }
+    .quiz-feedback.ok {
+      background: #1e3327;
+      border-color: #2e5c3e;
+      color: #bdf3cc;
+    }
+    .quiz-hint {
+      font-size: 11.5px;
+      margin-top: 7px;
+      padding: 7px 9px;
+      border-left: 2px solid #6b6f3f;
+      border-radius: 0 7px 7px 0;
+      background: #211f16;
+      color: #e5c47d;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .quiz-hint.answer {
+      border-left-color: #5b916d;
+      background: #10110e;
+      color: #d8dccf;
+    }
+    .quiz-hint b {
+      display: block;
+      margin-bottom: 2px;
+      color: #f0eee6;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
 
     .ctx-backdrop { position: fixed; inset: 0; }
     .ctx {
@@ -1715,12 +1825,364 @@
   };
 
   // -------------------------------------------------------------------
+  // Quiz me
+  // -------------------------------------------------------------------
+  let quizModal = null;
+
+  const closeQuiz = () => {
+    if (!quizModal) return;
+    quizModal.host.remove();
+    quizModal = null;
+  };
+
+  const openQuiz = () => {
+    closeQuiz();
+
+    const host = document.createElement('div');
+    host.id = 'flashcap-quiz-host';
+    host.style.cssText =
+      'all: initial; position: fixed; inset: 0; z-index: 2147483647; ' +
+      'display: flex; align-items: center; justify-content: center; ' +
+      'padding: 16px; background: rgba(10, 10, 8, .42);';
+    const root = host.attachShadow({ mode: 'open' });
+    injectStyles(root);
+
+    const progress = tag('div', { class: 'quiz-progress' });
+    const question = tag('div', {
+      class: 'quiz-question',
+      text: 'Reading what you have covered…',
+    });
+    const feedback = tag('div', { class: 'quiz-feedback', hidden: 'hidden' });
+    const hint = tag('div', { class: 'quiz-hint', hidden: 'hidden' });
+    const answer = tag('textarea', {
+      rows: 3,
+      placeholder: 'Answer in your own words',
+    });
+    const error = tag('div', { class: 'modal-error' });
+    const submit = tag('button', {
+      class: 'act primary',
+      type: 'button',
+      text: 'Submit answer',
+      onclick: () => submitAnswer(),
+    });
+    const skip = tag('button', {
+      class: 'act',
+      type: 'button',
+      text: 'Skip question',
+      onclick: () => skipQuestion(),
+    });
+    const retry = tag('button', {
+      class: 'act primary',
+      type: 'button',
+      text: 'Try another question',
+      hidden: 'hidden',
+      onclick: () => {
+        if (quizModal && current.retryAction) current.retryAction();
+      },
+    });
+    const again = tag('button', {
+      class: 'act primary',
+      type: 'button',
+      text: 'Quiz again',
+      hidden: 'hidden',
+      onclick: () => start(),
+    });
+
+    const panel = tag(
+      'div',
+      {
+        class: 'panel modal',
+        role: 'dialog',
+        'aria-modal': 'true',
+        'aria-label': 'Quiz me',
+      },
+      tag(
+        'div',
+        { class: 'head' },
+        tag('span', { class: 'check', text: '?' }),
+        tag('strong', { text: 'Quiz me' }),
+        tag('div', { class: 'spacer' }),
+        tag('button', {
+          class: 'close',
+          text: '×',
+          title: 'Close',
+          'aria-label': 'Close',
+          onclick: () => closeQuiz(),
+        })
+      ),
+      progress,
+      question,
+      feedback,
+      hint,
+      tag(
+        'div',
+        { class: 'field' },
+        tag('label', { text: 'Your answer' }),
+        answer
+      ),
+      tag('div', {
+        class: 'modal-hint',
+        text: 'Questions come from the part of the article above your current position. This never writes a flashcard.',
+      }),
+      error,
+      tag(
+        'div',
+        { class: 'modal-actions' },
+        submit,
+        skip,
+        retry,
+        again,
+        tag('button', { class: 'act', text: 'Close', onclick: () => closeQuiz() })
+      )
+    );
+
+    root.append(panel);
+    document.documentElement.append(host);
+    stopPageKeyboard(host, closeQuiz);
+
+    const current = {
+      host,
+      answer,
+      submit,
+      skip,
+      retry,
+      again,
+      busy: false,
+      sessionId: null,
+      retryAction: null,
+    };
+    quizModal = current;
+
+    const setBusy = (busy) => {
+      current.busy = busy;
+      submit.disabled = busy;
+      skip.disabled = busy;
+      answer.disabled = busy;
+      submit.textContent = busy ? 'Checking…' : 'Submit answer';
+    };
+
+    const showMode = (mode, message) => {
+      submit.hidden = mode !== 'question';
+      skip.hidden = mode !== 'question';
+      answer.hidden = mode !== 'question';
+      retry.hidden = mode !== 'error';
+      again.hidden = mode !== 'done';
+      if (mode !== 'question') answer.disabled = true;
+      if (mode === 'done') {
+        question.textContent =
+          'That covers every passage you have read so far.';
+      } else if (mode === 'error') {
+        question.textContent = message || 'Could not open the next question.';
+      }
+    };
+
+    const render = (data, message) => {
+      const session = data.session || {};
+      if (session.id) current.sessionId = session.id;
+      current.retryAction = nextQuestion;
+      setBusy(false);
+      feedback.hidden = true;
+      hint.hidden = true;
+      error.textContent = '';
+      answer.value = '';
+
+      const next = data.question;
+      if (!next) {
+        progress.textContent = session.asked_count
+          ? `${session.satisfied_count || 0} of ${session.asked_count} answered to satisfaction`
+          : '';
+        if (data.finished) {
+          showMode('done');
+        } else {
+          showMode('error', data.notice || 'The next question could not be generated.');
+          error.textContent = data.notice || '';
+        }
+        return;
+      }
+
+      showMode('question');
+      answer.disabled = false;
+      question.textContent = next.text;
+      const bits = [`Question ${(session.asked_count || 0) + 1}`];
+      if (session.total_units) {
+        bits.push(`${session.read_units || 0} of ${session.total_units} passages read`);
+      }
+      if (session.fresh_remaining) {
+        bits.push(`${session.fresh_remaining} not quizzed yet`);
+      }
+      progress.textContent = bits.join(' · ');
+      if (next.heading) {
+        progress.textContent += ` · ${next.heading}`;
+      }
+      if (message) {
+        feedback.hidden = false;
+        feedback.className = 'quiz-feedback ok';
+        feedback.textContent = message;
+      }
+      answer.focus();
+    };
+
+    const start = async () => {
+      const { units, total } = quizUnits();
+      current.sessionId = null;
+      setBusy(true);
+      feedback.hidden = true;
+      hint.hidden = true;
+      error.textContent = '';
+      retry.hidden = true;
+      again.hidden = true;
+
+      if (!units.length) {
+        showMode('empty');
+        progress.textContent = total
+          ? `${total} passages found, none read yet`
+          : 'No article text found on this page';
+        question.textContent =
+          'Read a little further, then quiz yourself on what you have covered.';
+        return;
+      }
+
+      progress.textContent = `${units.length} of ${total} passages read`;
+      question.textContent = 'Preparing a question…';
+
+      const meta = sourceMeta();
+      try {
+        const data = await request('POST', '/api/quiz/start', {
+          url: meta.url,
+          page_title: meta.title,
+          site: meta.site,
+          units,
+          total_units: total,
+        });
+        if (quizModal !== current) return;
+        render(data);
+      } catch (err) {
+        if (quizModal !== current) return;
+        setBusy(false);
+        current.retryAction = start;
+        showMode('error', 'Could not start the quiz.');
+        error.textContent = err.message || 'Quiz failed.';
+        progress.textContent = '';
+      }
+    };
+
+    const submitAnswer = async () => {
+      if (!quizModal || current.busy || !current.sessionId) return;
+      const text = answer.value.trim();
+      if (!text) {
+        error.textContent = 'Write an answer first.';
+        answer.focus();
+        return;
+      }
+
+      error.textContent = '';
+      setBusy(true);
+      try {
+        const data = await request(
+          'POST',
+          `/api/quiz/${current.sessionId}/answer`,
+          { answer: text }
+        );
+        if (quizModal !== current) return;
+
+        if (data.verdict === 'satisfactory') {
+          render(data, ['Accepted.', data.feedback].filter(Boolean).join(' '));
+          return;
+        }
+
+        setBusy(false);
+        answer.disabled = false;
+        if (data.feedback) {
+          feedback.hidden = false;
+          feedback.className = 'quiz-feedback';
+          feedback.textContent = data.feedback;
+        }
+        if (data.answer && data.answer.length) {
+          hint.hidden = false;
+          hint.className = 'quiz-hint answer';
+          hint.replaceChildren(
+            tag('b', { text: 'Expected answer' }),
+            data.answer.join(' · ')
+          );
+        } else if (data.hint) {
+          hint.hidden = false;
+          hint.className = 'quiz-hint';
+          hint.replaceChildren(
+            tag('b', { text: `Hint ${data.hint.level}` }),
+            data.hint.text
+          );
+        }
+        answer.focus();
+      } catch (err) {
+        if (quizModal !== current) return;
+        setBusy(false);
+        answer.disabled = false;
+        error.textContent = err.message || 'Could not check the answer.';
+      }
+    };
+
+    const skipQuestion = async () => {
+      if (!quizModal || current.busy || !current.sessionId) return;
+      error.textContent = '';
+      setBusy(true);
+      try {
+        const data = await request(
+          'POST',
+          `/api/quiz/${current.sessionId}/skip`
+        );
+        if (quizModal !== current) return;
+        render(data, 'Skipped.');
+      } catch (err) {
+        if (quizModal !== current) return;
+        setBusy(false);
+        error.textContent = err.message || 'Could not skip the question.';
+      }
+    };
+
+    const nextQuestion = async () => {
+      if (!quizModal || current.busy || !current.sessionId) return;
+      error.textContent = '';
+      setBusy(true);
+      try {
+        const data = await request('POST', `/api/quiz/${current.sessionId}/next`);
+        if (quizModal !== current) return;
+        render(data);
+      } catch (err) {
+        if (quizModal !== current) return;
+        setBusy(false);
+        error.textContent = err.message || 'Could not open another question.';
+      }
+    };
+
+    answer.addEventListener('keydown', (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+        event.preventDefault();
+        submitAnswer();
+      }
+    });
+    host.addEventListener('click', (event) => {
+      if (!event.composedPath().includes(panel)) closeQuiz();
+    });
+
+    start();
+    return current;
+  };
+
+  const quizFromPage = () => openQuiz();
+
+  // -------------------------------------------------------------------
   // Wiring
   // -------------------------------------------------------------------
   window.addEventListener(
     'keydown',
     (event) => {
       if (event.key === 'Escape') {
+        if (quizModal) {
+          event.preventDefault();
+          event.stopPropagation();
+          closeQuiz();
+          return;
+        }
         if (explainModal) {
           event.preventDefault();
           event.stopPropagation();
@@ -1753,13 +2215,14 @@
         }
       }
 
-      if (cardModal || modal || explainModal || contextMenu) return;
+      if (cardModal || modal || explainModal || quizModal || contextMenu) return;
       if (event.repeat) return;
       const key = String(event.key || '').toLowerCase();
       const isK = event.code === 'KeyK' || key === 'k';
       const isL = event.code === 'KeyL' || key === 'l';
       const isE = event.code === 'KeyE' || key === 'e';
-      if (!isK && !isL && !isE) return;
+      const isQ = event.code === 'KeyQ' || key === 'q';
+      if (!isK && !isL && !isE && !isQ) return;
       const matches = IS_MAC
         ? event.metaKey && event.shiftKey && !event.altKey && !event.ctrlKey
         : event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey;
@@ -1768,7 +2231,8 @@
       event.stopPropagation();
       if (isK) captureCard();
       else if (isL) annotateFromPage();
-      else explainFromPage();
+      else if (isE) explainFromPage();
+      else quizFromPage();
     },
     true
   );
@@ -1810,10 +2274,12 @@
         GM.registerMenuCommand(`New flashcard (${HOTKEY_LABEL})`, captureCard);
         GM.registerMenuCommand(`Annotate in Obsidian (${NOTE_LABEL})`, annotateFromPage);
         GM.registerMenuCommand(`Explain passage (${EXPLAIN_LABEL})`, explainFromPage);
+        GM.registerMenuCommand(`Quiz me (${QUIZ_LABEL})`, quizFromPage);
       } else if (typeof GM_registerMenuCommand === 'function') {
         GM_registerMenuCommand(`New flashcard (${HOTKEY_LABEL})`, captureCard);
         GM_registerMenuCommand(`Annotate in Obsidian (${NOTE_LABEL})`, annotateFromPage);
         GM_registerMenuCommand(`Explain passage (${EXPLAIN_LABEL})`, explainFromPage);
+        GM_registerMenuCommand(`Quiz me (${QUIZ_LABEL})`, quizFromPage);
       }
     } catch (_) {
       /* menu command is a nice-to-have */

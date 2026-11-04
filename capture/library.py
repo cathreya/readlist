@@ -7,14 +7,12 @@ never written.
 
 from __future__ import annotations
 
-import argparse
 import os
 import sqlite3
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from . import store
-from .config import PROJECT_ROOT
 from .obsidian import normalize_url
 
 SOURCE_IMPORT = "import"
@@ -110,34 +108,3 @@ def import_legacy(legacy_db_path: str) -> dict[str, int]:
         store.upsert_reading_item(item)
     after = store.reading_counts()["total"]
     return {"seen": len(rows), "added": after - before, "total": after}
-
-
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(
-        description="Copy the Lecture Today backlog into the Flashcap library."
-    )
-    parser.add_argument(
-        "--legacy",
-        default=str(PROJECT_ROOT / "lecture_today.db"),
-        help="Path to lecture_today.db (read-only).",
-    )
-    parser.add_argument(
-        "--db",
-        default=None,
-        help="Path to the Flashcap database. Defaults to FLASHCAP_DB.",
-    )
-    args = parser.parse_args(argv)
-
-    from .server import create_app
-
-    app = create_app(args.db)
-    with app.app_context():
-        counts = import_legacy(args.legacy)
-    print(
-        f"Read {counts['seen']} rows, added {counts['added']}, "
-        f"library now holds {counts['total']}."
-    )
-
-
-if __name__ == "__main__":
-    main()

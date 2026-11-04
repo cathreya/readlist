@@ -562,6 +562,10 @@ def chunk_items(
             for ci, child in enumerate(children, 1):
                 child_title = child.get("title", f"{item['title'] or 'Untitled'} (Part {ci})")
                 child_url = child.get("url", item["url"])
+                # Ensure unique URL for each chunk
+                if child_url and not child.get("url"):
+                    sep = "&" if "?" in child_url else "?"
+                    child_url = f"{child_url}{sep}chunk={ci}"
                 db.execute(
                     """INSERT OR IGNORE INTO items
                        (url, title, domain, content_type, description,

@@ -8,7 +8,7 @@ import pytest
 
 from types import SimpleNamespace
 
-from capture import llm, note_agent, obsidian, server, store
+from capture import llm, note_agent, obsidian, quiz, server, store
 
 
 @pytest.fixture()
@@ -752,6 +752,35 @@ def test_queue_mode_queues_uri_without_opening(client, monkeypatch, obsidian_stu
     assert client.get("/api/obsidian/pending").get_json()["count"] == 0
 
 
+def test_api_rejects_unexpected_host(client):
+    assert client.get("/api/health", headers={"Host": "evil.example:8765"}).status_code == 403
+    assert client.get("/api/health").status_code == 200
+
+
+def test_note_agent_refuses_unexpected_uris(monkeypatch):
+    notes = [
+        {"id": 1, "uri": "file:///etc/passwd", "path": "Reading/A.md"},
+        {"id": 2, "uri": "obsidian://new?ok", "path": "../escape.md"},
+        {"id": 3, "uri": "obsidian://new?ok", "path": "Reading/A.md"},
+    ]
+    acked: list[int] = []
+    opened: list[str] = []
+
+    monkeypatch.setattr(note_agent, "pending", lambda: notes)
+    monkeypatch.setattr(note_agent, "ack", lambda queue_id: acked.append(queue_id))
+    monkeypatch.setattr(note_agent.time, "sleep", lambda _seconds: None)
+
+    def fake_open(args, **_kwargs):
+        opened.append(args[-1])
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(note_agent.subprocess, "run", fake_open)
+
+    assert note_agent.drain() == 1
+    assert opened == ["obsidian://new?ok"]
+    assert acked == [1, 2, 3]
+
+
 def test_note_agent_drains_queue_in_order(monkeypatch):
     notes = [
         {"id": 1, "uri": "obsidian://new?one", "path": "Reading/A.md"},
@@ -828,3 +857,368 @@ def test_note_path_sanitizes_titles():
     for forbidden in '/\\:*?"<>|#^[]':
         assert forbidden not in name
     assert name.strip()
+
+
+# ---------------------------------------------------------------------------
+# Quiz me
+# ---------------------------------------------------------------------------
+
+def quiz_unit(index: int) -> dict:
+    return {
+        "key": f"u{index}",
+        "text": f"Passage {index} " + "word " * 60,
+        "heading": f"Section {index}",
+    }
+
+
+def start_quiz(client, units=None, monkeypatch=None, url="https://example.com/long-read"):
+    units = units if units is not None else [quiz_unit(i) for i in range(4)]
+    return client.post(
+        "/api/quiz/start",
+        json={
+            "url": url,
+            "page_title": "A long read",
+            "units": units,
+            "total_units": len(units),
+        },
+    )
+
+
+def fake_question(title, heading, passage):
+    return {
+        "question": f"What does {heading or 'the passage'} claim?",
+        "kind": "explain",
+        "expected": ["the main claim", "why it matters"],
+        "hints": ["Look at the first sentence.", "It contrasts two things.", "It is about the mechanism."],
+    }
+
+
+def test_quiz_normalize_units_drops_short_and_duplicate_passages():
+    units = quiz.normalize_units(
+        [
+            {"key": "a", "text": "too short"},
+            {"key": "a", "text": "x" * 250},
+            {"key": "b", "text": "x" * 250},
+            {"key": "a", "text": "x" * 250},
+            "not a unit",
+        ]
+    )
+    assert [unit["key"] for unit in units] == ["a", "b"]
+
+
+def test_quiz_select_prefers_the_passage_just_read():
+    units = [quiz_unit(i) for i in range(4)]
+    picked = quiz.select_unit(units, [], {}, 0)
+    assert picked["key"] == "u3"
+
+
+def test_quiz_select_mixes_recall_every_fourth_question():
+    units = [quiz_unit(i) for i in range(4)]
+    coverage = {
+        "u1": {"last_asked_at": "2026-01-01T00:00:00Z"},
+        "u2": {"last_asked_at": "2026-02-01T00:00:00Z"},
+    }
+    fresh = quiz.select_unit(units, [], coverage, 0)
+    assert fresh["key"] == "u3"
+
+    recall = quiz.select_unit(units, [], coverage, 3)
+    assert recall["key"] == "u1"  # stalest coverage first
+
+
+def test_quiz_select_skips_passages_asked_this_session():
+    units = [quiz_unit(i) for i in range(3)]
+    picked = quiz.select_unit(units, ["u2"], {}, 1)
+    assert picked["key"] == "u1"
+
+
+def test_quiz_select_finishes_when_everything_was_asked():
+    units = [quiz_unit(i) for i in range(2)]
+    assert quiz.select_unit(units, ["u0", "u1"], {}, 2) is None
+
+
+def test_quiz_hint_ladder_escalates_then_reveals_the_answer():
+    question = quiz.build_question(quiz_unit(0), fake_question("", "", ""))
+
+    question, first = quiz.apply_grade(
+        question, {"satisfactory": False, "feedback": "Too vague."}
+    )
+    assert first["verdict"] == "not_yet"
+    assert first["hint"] == {"level": 1, "text": "Look at the first sentence."}
+    assert first["revealed"] is False
+
+    question, second = quiz.apply_grade(
+        question, {"satisfactory": False, "feedback": "Still vague."}
+    )
+    assert second["hint"]["level"] == 2
+
+    question, third = quiz.apply_grade(
+        question, {"satisfactory": False, "feedback": "Missing the point."}
+    )
+    assert third["hint"]["level"] == 3
+
+    question, fourth = quiz.apply_grade(
+        question, {"satisfactory": False, "feedback": "Not yet."}
+    )
+    assert fourth["hint"] is None
+    assert fourth["revealed"] is True
+    assert fourth["answer"] == ["the main claim", "why it matters"]
+
+    _question, accepted = quiz.apply_grade(
+        question, {"satisfactory": True, "feedback": "That is it."}
+    )
+    assert accepted["verdict"] == "satisfactory"
+
+
+def test_quiz_question_view_hides_expected_points_and_hints():
+    question = quiz.build_question(quiz_unit(0), fake_question("", "", ""))
+    view = quiz.question_view(question)
+    assert view["text"].startswith("What does")
+    assert "expected" not in view
+    assert "hints" not in view
+
+
+def test_quiz_api_requires_a_passage_above_the_reader(client, monkeypatch):
+    monkeypatch.setattr(server, "generate_question", fake_question)
+    response = start_quiz(client, units=[{"key": "u0", "text": "short", "heading": ""}])
+    assert response.status_code == 422
+
+
+def test_quiz_api_returns_a_question_without_the_answer(client, monkeypatch):
+    monkeypatch.setattr(server, "generate_question", fake_question)
+    response = start_quiz(client)
+    assert response.status_code == 201
+    body = response.get_json()
+    assert body["question"]["text"].startswith("What does")
+    assert "expected" not in body["question"]
+    assert body["session"]["read_units"] == 4
+    assert body["session"]["fresh_remaining"] == 3
+    assert body["session"]["asked_count"] == 0
+
+
+def test_quiz_api_wrong_answer_hints_and_keeps_the_question(client, monkeypatch):
+    monkeypatch.setattr(server, "generate_question", fake_question)
+    monkeypatch.setattr(
+        server,
+        "grade_answer",
+        lambda *args, **kwargs: {"satisfactory": False, "feedback": "Say why."},
+    )
+    start = start_quiz(client).get_json()
+    session_id = start["session"]["id"]
+    question_text = start["question"]["text"]
+
+    response = client.post(
+        f"/api/quiz/{session_id}/answer", json={"answer": "It is about stuff."}
+    )
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["verdict"] == "not_yet"
+    assert body["feedback"] == "Say why."
+    assert body["hint"]["level"] == 1
+    assert body["question"]["text"] == question_text
+    assert body["session"]["asked_count"] == 0
+
+
+def test_quiz_api_satisfactory_answer_advances_and_records_coverage(client, monkeypatch):
+    seen: list[str] = []
+
+    def generate(title, heading, passage):
+        seen.append(passage)
+        return fake_question(title, heading, passage)
+
+    monkeypatch.setattr(server, "generate_question", generate)
+    monkeypatch.setattr(
+        server,
+        "grade_answer",
+        lambda *args, **kwargs: {"satisfactory": True, "feedback": "Correct."},
+    )
+
+    first = start_quiz(client).get_json()
+    assert seen[0].startswith("Passage 3")
+
+    response = client.post(
+        f"/api/quiz/{first['session']['id']}/answer",
+        json={"answer": "It claims attention is enough."},
+    )
+    body = response.get_json()
+    assert body["verdict"] == "satisfactory"
+    assert body["session"]["asked_count"] == 1
+    assert body["session"]["satisfied_count"] == 1
+    assert body["session"]["fresh_remaining"] == 2
+    assert body["question"]["text"].startswith("What does")
+    assert seen[1].startswith("Passage 2")
+
+    second = start_quiz(client)
+    assert second.status_code == 201
+    assert seen[2].startswith("Passage 2") or seen[2].startswith("Passage 1")
+
+
+def test_quiz_api_second_session_skips_already_quizzed_passages(client, monkeypatch):
+    seen: list[str] = []
+
+    def generate(title, heading, passage):
+        seen.append(passage)
+        return fake_question(title, heading, passage)
+
+    monkeypatch.setattr(server, "generate_question", generate)
+    monkeypatch.setattr(
+        server,
+        "grade_answer",
+        lambda *args, **kwargs: {"satisfactory": True, "feedback": "Correct."},
+    )
+
+    first = start_quiz(client).get_json()
+    client.post(
+        f"/api/quiz/{first['session']['id']}/answer",
+        json={"answer": "Yes."},
+    )
+    start_quiz(client)
+    assert not seen[-1].startswith("Passage 3")
+
+
+def test_quiz_api_grading_failure_does_not_consume_the_attempt(client, monkeypatch):
+    monkeypatch.setattr(server, "generate_question", fake_question)
+
+    def fail(*args, **kwargs):
+        raise llm.LLMError("provider is down")
+
+    monkeypatch.setattr(server, "grade_answer", fail)
+    start = start_quiz(client).get_json()
+    session_id = start["session"]["id"]
+
+    response = client.post(
+        f"/api/quiz/{session_id}/answer", json={"answer": "An answer."}
+    )
+    assert response.status_code == 502
+
+    resumed = client.post(f"/api/quiz/{session_id}/next")
+    assert resumed.status_code == 200
+    assert resumed.get_json()["question"]["text"] == start["question"]["text"]
+
+
+def test_quiz_api_skip_records_coverage_and_advances(client, monkeypatch):
+    monkeypatch.setattr(server, "generate_question", fake_question)
+    start = start_quiz(client).get_json()
+
+    response = client.post(f"/api/quiz/{start['session']['id']}/skip")
+    body = response.get_json()
+    assert response.status_code == 200
+    assert body["session"]["asked_count"] == 1
+    assert body["session"]["satisfied_count"] == 0
+    assert body["question"]["text"].startswith("What does")
+
+
+def test_quiz_api_unknown_session_is_404(client):
+    assert client.post("/api/quiz/999/answer", json={"answer": "x"}).status_code == 404
+
+
+def test_quiz_api_requires_an_answer(client, monkeypatch):
+    monkeypatch.setattr(server, "generate_question", fake_question)
+    session_id = start_quiz(client).get_json()["session"]["id"]
+    response = client.post(f"/api/quiz/{session_id}/answer", json={"answer": "   "})
+    assert response.status_code == 400
+
+
+def test_quiz_generate_parses_json_and_pads_missing_hints(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setattr(
+        llm,
+        "_call_llm",
+        lambda *args, **kwargs: (
+            '```json\n{"question": "Why?", "kind": "explain", '
+            '"expected": ["because"], "hints": []}\n```'
+        ),
+    )
+    result = llm.generate_question("Title", "Heading", "A passage.")
+    assert result["question"] == "Why?"
+    assert result["hints"] == [llm.FALLBACK_HINT]
+
+
+def test_quiz_generate_rejects_an_empty_question(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setattr(
+        llm, "_call_llm", lambda *args, **kwargs: '{"question": "", "expected": ["x"]}'
+    )
+    with pytest.raises(llm.LLMError):
+        llm.generate_question("Title", "Heading", "A passage.")
+
+
+def test_quiz_grade_parses_a_boolean_verdict(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setattr(
+        llm,
+        "_call_llm",
+        lambda *args, **kwargs: '{"satisfactory": "false", "feedback": "Missing the why."}',
+    )
+    result = llm.grade_answer("Why?", ["because"], "A passage.", "It happens.")
+    assert result["satisfactory"] is False
+    assert result["feedback"] == "Missing the why."
+
+
+def test_quiz_grade_rejects_a_missing_verdict(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: '{"feedback": "hmm"}')
+    with pytest.raises(llm.LLMError):
+        llm.grade_answer("Why?", ["because"], "A passage.", "It happens.")
+
+
+def test_quiz_api_reopening_moves_past_an_unanswered_passage(client, monkeypatch):
+    seen: list[str] = []
+
+    def generate(title, heading, passage):
+        seen.append(passage)
+        return fake_question(title, heading, passage)
+
+    monkeypatch.setattr(server, "generate_question", generate)
+    start_quiz(client)
+    assert seen[0].startswith("Passage 3")
+
+    start_quiz(client)
+    assert seen[1].startswith("Passage 2")
+
+
+def test_quiz_generate_prompt_asks_for_reasoning_not_fact_recall(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    captured: dict[str, str] = {}
+
+    def call(config, prompt, system, max_tokens):
+        captured["prompt"] = prompt
+        captured["system"] = system
+        return (
+            '{"question": "Why does the path length change the cost?", '
+            '"kind": "explain", "expected": ["x"], "hints": ["y"]}'
+        )
+
+    monkeypatch.setattr(llm, "_call_llm", call)
+    llm.generate_question("Title", "Heading", "A passage.")
+    text = f"{captured['system']} {captured['prompt']}".lower()
+    assert "reasoning" in text
+    assert "flashcard" in text
+    assert "a definition is fair game only when" in text
+
+
+def test_quiz_grade_prompt_does_not_accept_a_fact_as_reasoning(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    captured: dict[str, str] = {}
+
+    def call(config, prompt, system, max_tokens):
+        captured["prompt"] = prompt
+        captured["system"] = system
+        return '{"satisfactory": true, "feedback": "ok"}'
+
+    monkeypatch.setattr(llm, "_call_llm", call)
+    llm.grade_answer("Why?", ["because"], "A passage.", "Something.")
+    text = f"{captured['system']} {captured['prompt']}".lower()
+    assert "expected reasoning" in text
+    assert "remembered fact" in text or "correct fact" in text
+
+
+def test_quiz_generate_falls_back_to_the_explain_kind(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setattr(
+        llm,
+        "_call_llm",
+        lambda *args, **kwargs: (
+            '{"question": "Why?", "kind": "trivia", "expected": ["x"], "hints": ["y"]}'
+        ),
+    )
+    assert llm.generate_question("T", "H", "P")["kind"] == "explain"

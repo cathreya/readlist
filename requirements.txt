@@ -1,5 +1,0 @@
-# Lecture Today dependencies
-flask>=3.0
-anthropic>=0.39
-beautifulsoup4>=4.12
-requests>=2.31

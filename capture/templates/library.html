@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Flashcap — reading list{% endblock %}
+
+{% block body %}
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a class="brand" href="/">
+      <span class="brand-mark">F</span>
+      flashcap
+      <span class="brand-sub">read → remember</span>
+    </a>
+    <div class="topbar-actions">
+      <a class="btn" href="/">Cards</a>
+      <a class="btn" href="/practice" id="practice-link">
+        Practice <span class="count-badge" id="practice-count" hidden></span>
+      </a>
+      <a class="btn btn-primary" href="/quick">Quick capture <kbd>n</kbd></a>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="intro">
+    <div>
+      <h1>Reading list</h1>
+      <p class="lede">
+        Everything you saved in Telegram, in one place. Start what you are
+        reading, finish what you read, and drop what you never will.
+      </p>
+    </div>
+    <div class="stat" aria-live="polite">
+      <span class="stat-number" id="stat-unread">—</span>
+      <span class="stat-label" id="stat-total">saved</span>
+    </div>
+  </section>
+
+  <form class="lib-add" id="add-form" autocomplete="off">
+    <input
+      id="add-url"
+      type="url"
+      inputmode="url"
+      placeholder="Paste a link to save it here…"
+      aria-label="Add a link"
+      required
+    >
+    <button class="btn btn-primary" type="submit">Add link</button>
+    <p class="lib-notice" id="notice" role="status" hidden></p>
+  </form>
+
+  <section class="toolbar" aria-label="Search and filter">
+    <div class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <circle cx="11" cy="11" r="7"></circle>
+        <path d="m20 20-3.5-3.5"></path>
+      </svg>
+      <input id="search" type="search" placeholder="Search titles, sites, notes…" autocomplete="off" spellcheck="false" aria-label="Search the reading list">
+      <kbd class="slash">/</kbd>
+    </div>
+    <div class="pills" id="status-pills"></div>
+    <select id="site-filter" class="site-filter" aria-label="Filter by site">
+      <option value="">All sites</option>
+    </select>
+  </section>
+
+  <section id="items" class="lib-list" aria-live="polite" aria-busy="true"></section>
+
+  <section id="empty" class="empty" hidden>
+    <h2>Nothing saved yet</h2>
+    <p>
+      Message your Telegram bot with a link, or paste one above. New links land
+      here on their own.
+    </p>
+    <p class="fine">
+      For the existing backlog, run <code>python -m capture.import_legacy</code>.
+    </p>
+  </section>
+
+  <section id="no-results" class="no-results" hidden>
+    Nothing matches that filter.
+    <button class="btn btn-ghost" type="button" id="clear-filters">Clear filters</button>
+  </section>
+</main>
+
+<footer class="footer wrap">
+  <span>Stored locally · Telegram feeds this list</span>
+  <nav>
+    <a href="/">Cards</a>
+    <a href="/practice">Practice</a>
+    <a href="/quick">Quick capture</a>
+  </nav>
+  <span class="footer-status">
+    <span class="status" id="telegram-status">Telegram: …</span>
+  </span>
+</footer>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/library.js" defer></script>
+{% endblock %}

@@ -1,0 +1,19 @@
+.DS_Store
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Local databases and SQLite sidecars
+*.db
+*.db-shm
+*.db-wal
+
+# Built Mac app
+capture/mac/build/
+capture/mac/*.app/
+
+# Python
+__pycache__/
+.pytest_cache/

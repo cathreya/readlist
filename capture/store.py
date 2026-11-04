@@ -109,6 +109,30 @@ CREATE TABLE IF NOT EXISTS ingest_state (
     value      TEXT,
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
+
+CREATE TABLE IF NOT EXISTS quiz_sessions (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_url       TEXT NOT NULL,
+    source_title     TEXT,
+    units            TEXT NOT NULL DEFAULT '[]',
+    total_units      INTEGER NOT NULL DEFAULT 0,
+    asked            TEXT NOT NULL DEFAULT '[]',
+    question         TEXT,
+    asked_count      INTEGER NOT NULL DEFAULT 0,
+    satisfied_count  INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS quiz_coverage (
+    source_url      TEXT NOT NULL,
+    unit_key        TEXT NOT NULL,
+    times_asked     INTEGER NOT NULL DEFAULT 0,
+    times_satisfied INTEGER NOT NULL DEFAULT 0,
+    last_asked_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    last_verdict    TEXT,
+    PRIMARY KEY (source_url, unit_key)
+);
 """
 
 _COLUMN_ADDITIONS = [
@@ -155,6 +179,13 @@ def init_db(path: Optional[str] = None) -> None:
         conn.commit()
     finally:
         conn.close()
+
+    # The database holds private reading material; keep it owner-only.
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            os.chmod(db_path + suffix, 0o600)
+        except OSError:
+            pass
 
 
 def _db_path() -> str:
@@ -905,6 +936,153 @@ def set_state(key: str, value: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Quiz sessions and coverage
+# ---------------------------------------------------------------------------
+
+_QUIZ_SESSION_FIELDS = (
+    "units",
+    "total_units",
+    "asked",
+    "question",
+    "asked_count",
+    "satisfied_count",
+)
+
+
+def row_to_quiz_session(row: sqlite3.Row) -> dict[str, Any]:
+    session = dict(row)
+    session["units"] = _json_load(session.get("units"), [])
+    session["asked"] = _json_load(session.get("asked"), [])
+    session["question"] = _json_load(session.get("question"), None)
+    return session
+
+
+def create_quiz_session(
+    source_url: str,
+    source_title: str,
+    units: list[dict[str, Any]],
+    total_units: int,
+) -> dict[str, Any]:
+    db = get_db()
+    cursor = db.execute(
+        """
+        INSERT INTO quiz_sessions (source_url, source_title, units, total_units)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            source_url,
+            source_title or None,
+            json.dumps(units),
+            max(0, min(int(total_units or 0), 5000)),
+        ),
+    )
+    db.commit()
+    return get_quiz_session(int(cursor.lastrowid)) or {}
+
+
+def get_quiz_session(session_id: int) -> Optional[dict[str, Any]]:
+    row = get_db().execute(
+        "SELECT * FROM quiz_sessions WHERE id = ?", (session_id,)
+    ).fetchone()
+    return row_to_quiz_session(row) if row else None
+
+
+def update_quiz_session(
+    session_id: int, fields: dict[str, Any]
+) -> Optional[dict[str, Any]]:
+    """Apply a session update. ``units``, ``asked`` and ``question`` are JSON."""
+    updates: list[str] = []
+    params: list[Any] = []
+
+    for key in _QUIZ_SESSION_FIELDS:
+        if key not in fields:
+            continue
+        value = fields[key]
+        if key in ("units", "asked", "question"):
+            value = json.dumps(value)
+        elif key == "total_units":
+            value = max(0, min(int(value or 0), 5000))
+        else:
+            value = max(0, int(value or 0))
+        updates.append(f"{key} = ?")
+        params.append(value)
+
+    if not updates:
+        return get_quiz_session(session_id)
+
+    updates.append("updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')")
+    params.append(session_id)
+    db = get_db()
+    cursor = db.execute(
+        f"UPDATE quiz_sessions SET {', '.join(updates)} WHERE id = ?",  # noqa: S608
+        params,
+    )
+    db.commit()
+    if cursor.rowcount == 0:
+        return None
+    return get_quiz_session(session_id)
+
+
+def record_quiz_coverage(
+    source_url: str, unit_key: str, verdict: str | None = None
+) -> None:
+    """Remember that a passage was shown a question.
+
+    A passage counts as quizzed when its question is opened, so abandoning a
+    panel still moves the next session on. The verdict lands when the question
+    resolves: ``satisfactory`` or ``skipped``.
+    """
+    db = get_db()
+    if verdict is None:
+        db.execute(
+            """
+            INSERT INTO quiz_coverage (source_url, unit_key, times_asked)
+            VALUES (?, ?, 1)
+            ON CONFLICT(source_url, unit_key) DO UPDATE SET
+                times_asked = quiz_coverage.times_asked + 1,
+                last_asked_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            """,
+            (source_url, unit_key),
+        )
+    else:
+        db.execute(
+            """
+            INSERT INTO quiz_coverage
+                (source_url, unit_key, times_asked, times_satisfied, last_verdict)
+            VALUES (?, ?, 0, ?, ?)
+            ON CONFLICT(source_url, unit_key) DO UPDATE SET
+                times_satisfied = quiz_coverage.times_satisfied + excluded.times_satisfied,
+                last_asked_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+                last_verdict = excluded.last_verdict
+            """,
+            (
+                source_url,
+                unit_key,
+                1 if verdict == "satisfactory" else 0,
+                verdict,
+            ),
+        )
+    db.commit()
+
+
+def quiz_coverage(source_url: str) -> dict[str, dict[str, Any]]:
+    rows = get_db().execute(
+        "SELECT unit_key, times_asked, times_satisfied, last_asked_at, last_verdict "
+        "FROM quiz_coverage WHERE source_url = ?",
+        (source_url,),
+    ).fetchall()
+    return {
+        row["unit_key"]: {
+            "times_asked": int(row["times_asked"] or 0),
+            "times_satisfied": int(row["times_satisfied"] or 0),
+            "last_asked_at": row["last_asked_at"] or "",
+            "last_verdict": row["last_verdict"],
+        }
+        for row in rows
+    }
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -920,6 +1098,17 @@ def _trim(value: Any, limit: int) -> Optional[str]:
         return None
     text = str(value).strip()
     return text[:limit] if text else None
+
+
+def _json_load(value: Any, default: Any) -> Any:
+    if value is None or value == "":
+        return default
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return default
 
 
 def _float_or_none(value: Any) -> Optional[float]:

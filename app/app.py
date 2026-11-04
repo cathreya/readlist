@@ -34,6 +34,75 @@ def get_anki():
     return generate_cards, queue_cards, flush_card_queue
 
 
+def _chunk_uniform(title: str, estimated_minutes: int, chunk_minutes: int = 25) -> list[dict]:
+    """Split into uniform chunks of roughly chunk_minutes each."""
+    num_chunks = max(2, min(4, round(estimated_minutes / chunk_minutes)))
+    chunk_time = max(1, estimated_minutes // num_chunks)
+    return [
+        {
+            "title": f"{title} (Part {i + 1})",
+            "estimated_minutes": chunk_time,
+            "blurb": f"Part {i + 1} of {num_chunks}",
+        }
+        for i in range(num_chunks)
+    ]
+
+
+def _trigger_chunking(db, item_id: int) -> int | None:
+    """Chunk an item marked as too_long and return the first chunk's item id."""
+    item = db.execute(
+        "SELECT * FROM items WHERE id = ?", (item_id,)
+    ).fetchone()
+    if not item:
+        return None
+
+    title = item["title"] or "Untitled"
+    est = item["estimated_minutes"] or 60
+    children = _chunk_uniform(title, est)
+    chunk_total = len(children)
+
+    db.execute("UPDATE items SET chunk_total = ? WHERE id = ?", (chunk_total, item_id))
+
+    first_chunk_id = None
+    for ci, child in enumerate(children, 1):
+        child_url = item["url"]
+        if child_url:
+            # Make each chunk URL unique to satisfy the UNIQUE constraint
+            sep = "&" if "?" in child_url else "?"
+            child_url = f"{child_url}{sep}chunk={ci}"
+        # For YouTube, override with timestamp
+        if "youtube" in (item["domain"] or "") and "&t=" not in (item["url"] or ""):
+            start_sec = (ci - 1) * est * 60 // chunk_total
+            child_url = f"{item['url']}&t={start_sec}s" if item["url"] else None
+
+        cur = db.execute(
+            """INSERT OR IGNORE INTO items
+               (url, title, domain, content_type, description,
+                estimated_minutes, difficulty, topic, blurb,
+                chunk_total, chunk_index, parent_item_id, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unread')""",
+            (
+                child_url,
+                child["title"],
+                item["domain"],
+                item["content_type"],
+                child["blurb"],
+                child["estimated_minutes"],
+                item["difficulty"],
+                item["topic"],
+                child["blurb"],
+                chunk_total,
+                ci,
+                item_id,
+            ),
+        )
+        if first_chunk_id is None:
+            first_chunk_id = cur.lastrowid
+
+    db.commit()
+    return first_chunk_id
+
+
 @app.before_request
 def before_request():
     if not request.path.startswith("/static"):
@@ -56,15 +125,6 @@ def index():
         item = db.execute("SELECT * FROM items WHERE id = ?", (in_progress["id"],)).fetchone()
         build_lecture, _ = get_lecture_gen()
         lecture = build_lecture(dict(item), db)
-        # Personalize
-        _, personalize_fn = get_lecture_gen()
-        recent = db.execute(
-            "SELECT i.topic FROM sessions s JOIN items i ON s.item_id = i.id ORDER BY s.completed_at DESC LIMIT 5"
-        ).fetchall()
-        recent_topics = [r["topic"] for r in recent if r["topic"]]
-        connection = personalize_fn(lecture["warmup"], recent_topics, item["topic"])
-        if connection:
-            lecture["warmup"] = lecture["warmup"] + " " + connection
         return render_template("lecture.html", lecture=lecture, resuming=True, lighter_available=False)
 
     # Normal: pick next item
@@ -76,23 +136,24 @@ def index():
 
     item = result["item"]
     if item is None:
+        # If there are unclassified items, nudge the user to run the pipeline
+        unclassified = db.execute(
+            "SELECT COUNT(*) as c FROM items WHERE difficulty IS NULL AND status != 'dead'"
+        ).fetchone()["c"]
+        if unclassified > 0:
+            return render_template(
+                "celebration.html",
+                message=f"{unclassified} items imported but not yet classified.",
+                show_classifier_link=True
+            )
         return render_template("celebration.html")
 
     # Mark in progress
     db.execute("UPDATE items SET status = 'in_progress' WHERE id = ?", (item["id"],))
     db.commit()
 
-    build_lecture, personalize_fn = get_lecture_gen()
+    build_lecture, _ = get_lecture_gen()
     lecture = build_lecture(dict(item), db)
-
-    # Personalize
-    recent = db.execute(
-        "SELECT i.topic FROM sessions s JOIN items i ON s.item_id = i.id ORDER BY s.completed_at DESC LIMIT 5"
-    ).fetchall()
-    recent_topics = [r["topic"] for r in recent if r["topic"]]
-    connection = personalize_fn(lecture["warmup"], recent_topics, item["topic"])
-    if connection:
-        lecture["warmup"] = lecture["warmup"] + " " + connection
 
     return render_template(
         "lecture.html",
@@ -130,15 +191,8 @@ def lighter():
     db.execute("UPDATE items SET status = 'in_progress' WHERE id = ?", (item["id"],))
     db.commit()
 
-    build_lecture, personalize_fn = get_lecture_gen()
+    build_lecture, _ = get_lecture_gen()
     lecture = build_lecture(dict(item), db)
-    recent = db.execute(
-        "SELECT i.topic FROM sessions s JOIN items i ON s.item_id = i.id ORDER BY s.completed_at DESC LIMIT 5"
-    ).fetchall()
-    recent_topics = [r["topic"] for r in recent if r["topic"]]
-    connection = personalize_fn(lecture["warmup"], recent_topics, item["topic"])
-    if connection:
-        lecture["warmup"] = lecture["warmup"] + " " + connection
 
     return render_template("lecture.html", lecture=lecture, resuming=False, lighter_available=False)
 
@@ -180,15 +234,8 @@ def complete():
     db.execute("UPDATE items SET status = 'in_progress' WHERE id = ?", (next_item["id"],))
     db.commit()
 
-    build_lecture, personalize_fn = get_lecture_gen()
+    build_lecture, _ = get_lecture_gen()
     lecture = build_lecture(dict(next_item), db)
-    recent = db.execute(
-        "SELECT i.topic FROM sessions s JOIN items i ON s.item_id = i.id ORDER BY s.completed_at DESC LIMIT 5"
-    ).fetchall()
-    recent_topics = [r["topic"] for r in recent if r["topic"]]
-    connection = personalize_fn(lecture["warmup"], recent_topics, next_item["topic"])
-    if connection:
-        lecture["warmup"] = lecture["warmup"] + " " + connection
 
     return jsonify({"next": "lecture", "lecture": lecture, "continue_prompt": result.get("continue_prompt")})
 
@@ -204,18 +251,45 @@ def skip():
 
     # too_long is not a real skip — it's a chunking request, no cooldown
     if reason == "too_long":
-        db.execute(
-            "UPDATE items SET status = 'unread', error_reason = 'needs_chunking', chunk_total = NULL WHERE id = ?",
-            (item_id,)
-        )
+        first_chunk_id = _trigger_chunking(db, item_id)
+        if first_chunk_id:
+            db.execute(
+                "UPDATE items SET status = 'completed' WHERE id = ?",
+                (item_id,)
+            )
+            db.execute(
+                "UPDATE items SET status = 'in_progress' WHERE id = ?",
+                (first_chunk_id,)
+            )
+            db.commit()
+            build_lecture, _ = get_lecture_gen()
+            next_item = db.execute("SELECT * FROM items WHERE id = ?", (first_chunk_id,)).fetchone()
+            lecture = build_lecture(dict(next_item), db)
+            return jsonify({"next": "lecture", "lecture": lecture, "continue_prompt": None})
+        else:
+            db.execute(
+                "UPDATE items SET status = 'unread', error_reason = 'needs_chunking', needs_chunking = 1 WHERE id = ?",
+                (item_id,)
+            )
     else:
-        resurface = compute_resurface_date(reason)
+        # Check graveyard before inserting skip
+        if reason == "not_interested":
+            skip_count = db.execute(
+                "SELECT COUNT(*) as c FROM skips WHERE item_id = ? AND reason = 'not_interested'",
+                (item_id,)
+            ).fetchone()["c"]
+            if skip_count >= 2:  # This will be the 3rd skip
+                resurface = None  # Permanent graveyard
+            else:
+                resurface = compute_resurface_date(reason)
+        else:
+            resurface = compute_resurface_date(reason)
+
         db.execute(
             "INSERT INTO skips (item_id, reason, resurface_after) VALUES (?, ?, ?)",
             (item_id, reason, resurface)
         )
 
-        # Check graveyard: 3+ not_interested skips
         if reason == "not_interested":
             skip_count = db.execute(
                 "SELECT COUNT(*) as c FROM skips WHERE item_id = ? AND reason = 'not_interested'",
@@ -241,15 +315,8 @@ def skip():
     db.execute("UPDATE items SET status = 'in_progress' WHERE id = ?", (next_item["id"],))
     db.commit()
 
-    build_lecture, personalize_fn = get_lecture_gen()
+    build_lecture, _ = get_lecture_gen()
     lecture = build_lecture(dict(next_item), db)
-    recent = db.execute(
-        "SELECT i.topic FROM sessions s JOIN items i ON s.item_id = i.id ORDER BY s.completed_at DESC LIMIT 5"
-    ).fetchall()
-    recent_topics = [r["topic"] for r in recent if r["topic"]]
-    connection = personalize_fn(lecture["warmup"], recent_topics, next_item["topic"])
-    if connection:
-        lecture["warmup"] = lecture["warmup"] + " " + connection
 
     return jsonify({"next": "lecture", "lecture": lecture, "continue_prompt": result.get("continue_prompt")})
 
@@ -280,21 +347,34 @@ def setup_post():
     from parser import parse_messages_html
     items = parse_messages_html(messages_path, files_path)
 
+    # Fetch metadata for all parsed items
+    from metadata import fetch_all
+    items = fetch_all(items)
+
     db = get_db()
     inserted = 0
     notes_inserted = 0
+    dead_count = 0
     for item in items:
         try:
             # Notes and file-only items have no URL — use the content_type or a fallback
             url = item.get("url")
             if not url:
                 url = f"note://{item.get('content_type', 'unknown')}/{hash(item.get('description', ''))}"
+
+            status = "unread"
+            error_reason = None
+            if item.get("fetch_error") in ("not_found", "gone", "server_error"):
+                status = "dead"
+                error_reason = item["fetch_error"]
+                dead_count += 1
+
             db.execute(
-                "INSERT INTO items (url, title, domain, content_type, description, local_file_path) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO items (url, title, domain, content_type, description, local_file_path, status, error_reason) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (url, item.get("title", ""), item.get("domain", ""),
                  item.get("content_type", "unknown"), item.get("description", ""),
-                 item.get("local_file_path"))
+                 item.get("local_file_path"), status, error_reason)
             )
             inserted += 1
             if item.get("content_type") == "note":
@@ -309,8 +389,75 @@ def setup_post():
         "items_found": len(items),
         "items_inserted": inserted,
         "notes_saved": notes_inserted,
+        "dead_links": dead_count,
         "next_step": "Run: python classifier.py"
     })
+
+
+@app.route("/add", methods=["POST"])
+def add_url():
+    """Manually add a single URL to the queue."""
+    db = get_db()
+    data = request.get_json()
+    url = data.get("url", "").strip()
+    if not url:
+        return jsonify({"error": "URL is required"}), 400
+
+    from metadata import fetch_metadata
+    from parser import normalize_domain, detect_content_type
+
+    domain = normalize_domain(url)
+    content_type = detect_content_type(url, domain)
+    meta = fetch_metadata(url, domain, content_type)
+
+    status = "unread"
+    error_reason = None
+    if meta.get("error") in ("not_found", "gone", "server_error"):
+        status = "dead"
+        error_reason = meta["error"]
+
+    try:
+        db.execute(
+            "INSERT INTO items (url, title, domain, content_type, description, status, error_reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (url, meta.get("title", ""), domain, content_type,
+             meta.get("description", ""), status, error_reason)
+        )
+        db.commit()
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "URL already exists"}), 409
+
+    return jsonify({
+        "success": True,
+        "item_id": db.execute("SELECT last_insert_rowid()").fetchone()[0],
+        "status": status,
+    })
+
+
+@app.route("/graveyard")
+def graveyard():
+    """Browse graveyard and error items."""
+    db = get_db()
+    graveyard_items = db.execute(
+        "SELECT id, url, title, domain, content_type, topic, error_reason, created_at "
+        "FROM items WHERE error_reason = 'graveyard' OR status = 'dead' OR status = 'error' "
+        "ORDER BY created_at DESC"
+    ).fetchall()
+    return render_template("graveyard.html", items=[dict(r) for r in graveyard_items])
+
+
+@app.route("/revive", methods=["POST"])
+def revive():
+    """Revive a dead or error item back to the unread queue."""
+    db = get_db()
+    data = request.get_json()
+    item_id = data.get("item_id")
+    db.execute(
+        "UPDATE items SET status = 'unread', error_reason = NULL WHERE id = ?",
+        (item_id,)
+    )
+    db.commit()
+    return jsonify({"success": True})
 
 
 @app.route("/card-queue-status")

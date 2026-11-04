@@ -10,6 +10,8 @@ You can also select text, right-click, and choose **Annotate in Obsidian** to op
 
 `⌘⇧E` is the explicit **Ask the LLM** action: it explains the highlighted passage inline. The explanation is not saved unless you choose **Annotate this**, which opens the annotation popup pre-filled (tagged `ai-explanation`) so you can edit it before it goes into the vault. The LLM is used for **metadata suggestions and explanations**, never for card text.
 
+`⌘⇧Q` is **Quiz me**: it asks one reasoning question about a passage above your current scroll position, then grades your written answer. A wrong answer earns a hint and the same question is asked again until the answer is satisfactory. Passages you have not been quizzed on come first; older passages return for recall. Quiz questions are never written as cards.
+
 The original Lecture Today app is untouched. This lives in `capture/`, has its own SQLite database, and adds `fsrs` to the project dependencies for scheduling.
 
 The reference deployment runs on **hermes** (Tailscale), with the Mac acting only as the Obsidian note sink:
@@ -128,7 +130,24 @@ Firefox's built-in PDF viewer is a privileged page — userscripts can't run ins
 3. Paste (`⌘V`), add the paper/chapter title and URL if you want provenance.
 4. Write the **Front** and **Back**. **Suggest tags & category** fills the metadata from the passage; edit anything, then press **Save card** (`⌘↵`). Fill **Your annotation** and click **Save annotation** for the Obsidian record.
 
-The quick page also has a **Capture highlight** bookmarklet. Drag it to your bookmarks bar; clicking it after selecting text on a normal page opens the same form pre-filled. (In the PDF viewer itself, bookmarklets may be blocked; the copy/paste route always works.)
+The quick page also has a **Capture highlight** bookmarklet. Drag it to your bookmarks bar; clicking it after selecting text on a normal page opens the same form pre-filled. (In the PDF viewer itself, bookmarklets may be blocked; the copy/paste route always works.) The page clears the `?text=` query from the address bar as soon as it loads, so the passage is not left in browser history.
+
+**Write it where you are (native panel).** `capture/mac/` is a small menu-bar app for exactly this case. It owns the UI instead of a web page, so nothing changes tabs:
+
+```sh
+cd capture/mac && ./build.sh && open FlashcapCapture.app
+```
+
+Select the passage, press `⌘⇧J`, type front and back in the floating panel, `⌘↵`. It POSTs straight to `/api/capture`; no browser is involved. The first capture asks for **Accessibility** access (System Settings → Privacy & Security → Accessibility) — that is how it reads the selection. Add the app to **Login Items** so it is always there.
+
+- `⌘⇧J` is deliberate: `⌘⇧K` belongs to the userscript, so the two never fire together on a normal page.
+- Point it at the box with `defaults write local.flashcap.capture base https://hermes.taila17c7c.ts.net` (default `http://127.0.0.1:8765`).
+- It only reads selections from reading apps (Firefox, Safari, Chrome, Preview, Books, Kindle, Adobe Reader, PDF Expert, Skim, Zotero). Override with `defaults write local.flashcap.capture allowedApps -array org.mozilla.firefox com.apple.Preview`, or allow every app with `defaults write local.flashcap.capture allowAllApps -bool true`. The menu shows the current toggle and destination host.
+- Secure text fields are refused, and the clipboard is never touched. If Accessibility is unavailable or the page exposes no selection, the panel opens empty for you to paste into.
+- Captures are refused unless the destination is loopback (`127.0.0.1`, `localhost`) or an HTTPS Tailscale address (`.ts.net`, `100.64.0.0/10`, or `fd7a:115c:a1e0::/48`). Override the network check with `defaults write local.flashcap.capture allowAnyHost -bool true`.
+- `--selftest` refuses to write a test card anywhere except loopback.
+
+`capture/flashcap_quick.py` remains the no-install fallback: it opens `/quick` pre-filled (`pbpaste | flashcap_quick.py`, or hand it the text from a Shortcut's **Run Shell Script** with input to stdin).
 
 ### 3. YouTube
 
@@ -161,6 +180,24 @@ Open **Practice** from the top bar (the badge shows how many cards are ready). W
 - Reviews are stored in SQLite (`reviews` table), including FSRS stability/difficulty/state, so history and stats survive restarts.
 
 No Anki import loop is required. The Anki TSV export remains available as an escape hatch.
+
+---
+
+## Quiz me
+
+Press **`⌘⇧Q`** while reading any article. Flashcap asks you one **reasoning** question about a passage **above your current scroll position**, then grades your written answer.
+
+- Cards are for atomic facts. The quiz asks why, how, or what follows, so naming the right fact is not enough. A definition is fair game only when the idea cannot be reasoned about without it, and then the question asks what it implies.
+- Questions come from the part of the article you have actually read. Passages shorter than 200 characters are skipped, and only the 40 most recent read passages are sent.
+- **Wrong answers give a hint and re-ask the same question.** Three hints escalate; a fourth miss shows the expected answer points and keeps the question open until you restate them. **Skip question** is the escape hatch.
+- The panel prefers passages you have **not been quizzed on yet**. Every fourth question is drawn from older material for recall.
+- Coverage is stored per article and passage (`quiz_coverage`), keyed by a hash of the passage text, so it survives restarts and later sessions. A passage counts as quizzed when its question opens, so closing the panel mid-question does not re-ask it next time.
+- When every read passage has been asked once in the session, the panel says so and offers **Quiz again**; that run is recall-only until you read further.
+- Questions are generated per session and are **never written as cards**. The LLM grades answers and writes hints; your card fronts and backs stay yours.
+
+The quiz needs the configured LLM. Without a key it reports the error and the rest of Flashcap keeps working.
+
+Quiz sessions are stored in `quiz_sessions` (the open question, the passages, the asked keys) and coverage in `quiz_coverage`.
 
 ---
 
@@ -306,7 +343,7 @@ FLASHCAP_TIMEZONE=Europe/Dublin   # day headings use this timezone
 
 The server speaks the Anthropic Messages API (`POST {base_url}/v1/messages`). Anything that exposes that shape works, including Anthropic itself and DeepSeek's compatibility endpoint. Reasoning models that return `thinking` blocks before the text block are supported.
 
-**Privacy:** cards, review history, and queued note URIs are stored in `capture/flashcards.db` (on hermes in the reference deployment). Opening the card editor sends the passage to the LLM for **category/tags only**; `⌘⇧E` sends it for an explanation. Saved card text, annotations, review, and note writing stay local. If no API key is configured, you can still write cards and annotations manually; only the suggestions and explanations are unavailable.
+**Privacy:** cards, review history, and queued note URIs are stored in `capture/flashcards.db` (on hermes in the reference deployment). The **Mac app does not call the LLM**: it only POSTs to `/api/capture`. On the web path, opening the card editor sends the passage and surrounding context to the LLM for **category/tags only**, and `⌘⇧E` sends it for an explanation. Saved card text, annotations, review, and note writing stay local. If no API key is configured, you can still write cards and annotations manually; only the suggestions and explanations are unavailable.
 
 ---
 
@@ -354,7 +391,7 @@ For a purely local setup, the old LaunchAgent approach still works: run `./captu
 
 ## API
 
-All endpoints are unauthenticated. On hermes the server binds loopback and Tailscale Serve terminates HTTPS for the tailnet; the tailnet is the auth boundary — do not expose it publicly without auth. CORS reflects only localhost origins; the userscript uses Greasemonkey's privileged request API.
+All endpoints are unauthenticated. On hermes the server binds loopback and Tailscale Serve terminates HTTPS for the tailnet; the tailnet is the auth boundary — do not expose it publicly without auth. CORS reflects only localhost origins; the userscript uses Greasemonkey's privileged request API. Every request must also carry an expected `Host` (loopback, or `FLASHCAP_PUBLIC_URL`), which stops a malicious webpage from DNS-rebinding its own hostname to a local server. Set `FLASHCAP_PUBLIC_URL` whenever you run behind Tailscale Serve, or requests will be rejected.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -370,6 +407,10 @@ All endpoints are unauthenticated. On hermes the server binds loopback and Tails
 | `GET` | `/api/review/next` | Next new/due card + review stats |
 | `POST` | `/api/review/:id` | Grade a card (`again` / `hard` / `good` / `easy`) |
 | `GET` | `/api/review/stats` | Due/new/reviewed-today counts |
+| `POST` | `/api/quiz/start` | Start a quiz from the read passages `{url, page_title, units, total_units}` |
+| `POST` | `/api/quiz/:id/answer` | Grade a written answer; returns a hint or the next question |
+| `POST` | `/api/quiz/:id/skip` | Mark the open question skipped and advance |
+| `POST` | `/api/quiz/:id/next` | Reopen or generate the next question |
 | `POST` | `/api/notes` | Write/append an Obsidian reading record (no LLM, no card) |
 | `POST` | `/api/annotate` | Append a highlight + annotation + category/tags to the source note |
 | `POST` | `/api/explain` | Explain a passage inline (not stored) |
@@ -413,7 +454,8 @@ curl -s -X POST http://127.0.0.1:8765/api/annotate \
 capture/
   server.py            Flask app, API, review, exports
   store.py             SQLite schema + queries
-  llm.py               metadata suggestions + inline explanations
+  llm.py               metadata suggestions, explanations, quiz questions + grading
+  quiz.py              quiz policy: passage selection and the hint ladder
   obsidian.py          reading-note Markdown + obsidian:// handoff/queue
   note_agent.py        Mac-side queue flusher (launchd)
   install-note-agent.sh
@@ -446,16 +488,19 @@ capture/
 
 The suite covers manual card creation/validation, CRUD, search/filtering, metadata, category/tag suggestions (including the guarantee that they return no card text), TSV/Markdown escaping, CORS behavior, userscript URL injection, spaced-repetition grading and stats, Obsidian note creation/appending and annotation/tags (with the URI handoff stubbed), queued note delivery and the Mac agent drain order, inline explanations, the guarantee that notes never include card Q/A, and the LLM response parser (including `thinking` blocks).
 
+Quiz coverage adds passage selection (fresh before recall, stalest first), the hint ladder through to the revealed answer, session persistence, cross-session coverage, grading failures that do not consume an attempt, and the question/grade JSON parsers.
+
 ---
 
 ## Limits worth knowing
 
 - **Firefox PDF viewer and Reader Mode:** these are privileged pages, so no userscript injection by design; use quick capture (copy the passage, paste, `⌘↵` for a card, **Save annotation** for the Obsidian record, or **Explain**).
 - **Native right-click item:** Firefox userscripts can't add one. Selecting text and right-clicking shows Flashcap's own menu instead; Shift+right-click opens Firefox's native menu. A true native item needs a signed WebExtension (or a macOS Service).
-- **Shortcut conflicts:** `⌘⇧K`, `⌘⇧L`, and `⌘⇧E` are free in a default Firefox profile. If a site or another extension claims one, edit the keydown matcher at the bottom of `flashcap.user.js` (look for `KeyK` / `KeyL` / `KeyE`).
+- **Shortcut conflicts:** `⌘⇧K`, `⌘⇧L`, `⌘⇧E`, and `⌘⇧Q` are free in a default Firefox profile. If a site or another extension claims one, edit the keydown matcher at the bottom of `flashcap.user.js` (look for `KeyK` / `KeyL` / `KeyE` / `KeyQ`).
 - **Obsidian queue:** on hermes, notes are queued as `obsidian://` URIs; the Mac agent must be running to flush them. If the Mac is off, notes wait in SQLite (nothing is lost). In local `uri` mode the note is handed to Obsidian immediately.
 - **Notes are records, not review material:** they intentionally omit the card's front/back. Review lives in **Practice**; Anki export is optional.
 - **Note size:** each highlight is clipped to 2,000 characters. Surrounding context is omitted by default; set `FLASHCAP_NOTE_CONTEXT=1` for a 400-character excerpt.
 - **Renaming a generated note in Obsidian:** the local `obsidian_notes` table remembers the original path. If you move the note, later appends may recreate the old path; keep generated literature notes in `Reading/`, or update/clear that row.
-- **LLM boundaries:** the LLM suggests a category and reuses existing tags, and writes explanations. It never writes front/back or annotations. If the provider is down, the editor fields remain editable, card saving and review are unaffected, and Explain reports the error.
+- **LLM boundaries:** the LLM suggests a category and reuses existing tags, writes explanations, and generates and grades quiz questions. It never writes front/back or annotations, and quiz questions are never saved as cards. If the provider is down, the editor fields remain editable, card saving and review are unaffected, Explain reports the error, and Quiz offers **Try another question**.
+- **Quiz reach:** the quiz uses the same article-root detection as capture. On a page with no recognizable article root, or before you have scrolled past one long paragraph, it reports that there is not enough read text yet rather than guessing. The Firefox PDF viewer and Reader Mode cannot run the userscript, so the quiz is unavailable there, same as capture.
 - **Server must be running:** the reference deployment is a `systemctl --user` service on hermes with lingering enabled. Locally, use the LaunchAgent above or `./capture/run.sh`.

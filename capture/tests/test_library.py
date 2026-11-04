@@ -160,3 +160,74 @@ def test_legacy_import_rejects_missing_database(app, tmp_path):
     with app.app_context():
         with pytest.raises(FileNotFoundError):
             library.import_legacy(str(tmp_path / "nope.db"))
+
+
+# ---------------------------------------------------------------------------
+# Library API
+# ---------------------------------------------------------------------------
+
+def test_library_api_lists_filters_and_counts(app, client):
+    with app.app_context():
+        for key, site, status in [
+            ("https://a.example/1", "a.example", "unread"),
+            ("https://b.example/1", "b.example", "done"),
+        ]:
+            item = store.upsert_reading_item(
+                {"url": key, "url_key": key, "site": site, "title": key}
+            )
+            store.update_reading_item(item["id"], {"status": status})
+
+    data = client.get("/api/library").get_json()
+    assert data["total"] == 2
+    assert data["count"] == 2
+    assert data["counts"]["done"] == 1
+    assert {row["site"] for row in data["sites"]} == {"a.example", "b.example"}
+
+    assert client.get("/api/library?status=done").get_json()["count"] == 1
+    assert client.get("/api/library?q=b.example").get_json()["count"] == 1
+    assert client.get("/api/library?site=a.example").get_json()["count"] == 1
+
+
+def test_library_api_add_stores_canonical_link(client):
+    response = client.post(
+        "/api/library",
+        json={"url": "https://Example.com/watch?v=1&utm_source=x"},
+    )
+    assert response.status_code == 201
+    item = response.get_json()["item"]
+    assert item["url"] == "https://example.com/watch?v=1"
+    assert item["site"] == "example.com"
+    assert item["source"] == "manual"
+    assert item["status"] == "unread"
+
+    again = client.post(
+        "/api/library", json={"url": "https://example.com/watch?v=1"}
+    )
+    assert again.get_json()["item"]["id"] == item["id"]
+
+    assert client.post("/api/library", json={"url": "not a url"}).status_code == 400
+    assert client.post("/api/library", json={}).status_code == 400
+
+
+def test_library_api_updates_status_and_deletes(app, client):
+    with app.app_context():
+        item = store.upsert_reading_item(
+            {"url": "https://example.com/a", "url_key": "https://example.com/a"}
+        )
+    item_id = item["id"]
+
+    response = client.patch(f"/api/library/{item_id}", json={"status": "reading"})
+    assert response.status_code == 200
+    assert response.get_json()["item"]["status"] == "reading"
+
+    assert client.patch(f"/api/library/{item_id}", json={"status": "nope"}).status_code == 400
+    assert client.patch("/api/library/9999", json={"status": "done"}).status_code == 404
+
+    assert client.delete(f"/api/library/{item_id}").status_code == 200
+    assert client.delete(f"/api/library/{item_id}").status_code == 404
+
+
+def test_library_page_renders(client):
+    response = client.get("/library")
+    assert response.status_code == 200
+    assert b"Reading list" in response.data

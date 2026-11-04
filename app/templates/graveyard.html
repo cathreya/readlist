@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Graveyard — Lecture Today</title>
+<style>
+  :root { --bg: #faf9f7; --card: #fff; --text: #1a1a1a; --muted: #6b6b6b; --border: #e5e0d8; --accent: #2c5f2d; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1a1a1a; --card: #252525; --text: #e0e0e0; --muted: #999; --border: #333; --accent: #4caf50; }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; min-height: 100vh; }
+  .container { max-width: 720px; width: 100%; margin: 2rem auto; padding: 0 1rem; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 2rem; margin-bottom: 1rem; }
+  h1 { font-size: 1.5rem; margin-bottom: .5rem; }
+  p { color: var(--muted); margin-bottom: 1rem; }
+  .item { padding: 1rem; border-bottom: 1px solid var(--border); }
+  .item:last-child { border-bottom: none; }
+  .item-title { font-weight: 600; word-break: break-all; }
+  .item-meta { font-size: .85rem; color: var(--muted); margin-top: .25rem; }
+  .badge { display: inline-block; padding: .15rem .5rem; border-radius: 12px; font-size: .75rem; margin-right: .5rem; }
+  .badge-graveyard { background: #ffebee; color: #c62828; }
+  .badge-dead { background: #fff3e0; color: #ef6c00; }
+  .badge-error { background: #e3f2fd; color: #1565c0; }
+  .btn { padding: .5rem 1rem; border-radius: 6px; border: 1px solid var(--border); font-size: .85rem; cursor: pointer; background: var(--card); color: var(--text); }
+  .btn:hover { border-color: var(--accent); }
+  .actions { margin-top: 1.5rem; }
+  .actions a { color: var(--muted); text-decoration: none; margin-right: 1rem; }
+  .actions a:hover { color: var(--text); }
+  .empty { text-align: center; padding: 3rem 1rem; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <h1>Graveyard & Errors</h1>
+    <p>Items that are dead, failed to classify, or were sent to the graveyard after 3 “not interested” skips.</p>
+
+    {% if items %}
+      {% for item in items %}
+      <div class="item">
+        <div class="item-title">{{ item.title or item.url }}</div>
+        <div class="item-meta">
+          {% if item.error_reason == 'graveyard' %}
+            <span class="badge badge-graveyard">graveyard</span>
+          {% elif item.status == 'dead' %}
+            <span class="badge badge-dead">dead link</span>
+          {% else %}
+            <span class="badge badge-error">error</span>
+          {% endif %}
+          {{ item.domain or 'unknown' }}
+          {% if item.topic %}· {{ item.topic }}{% endif %}
+        </div>
+        {% if item.status == 'dead' or item.status == 'error' %}
+        <div style="margin-top:.5rem">
+          <button class="btn" onclick="revive({{ item.id }})">Revive</button>
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="empty">Nothing here. Your queue is clean.</div>
+    {% endif %}
+
+    <div class="actions">
+      <a href="/">← Today's lecture</a>
+      <a href="/setup">Setup</a>
+    </div>
+  </div>
+</div>
+
+<script>
+async function revive(itemId) {
+  const resp = await fetch('/revive', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({item_id: itemId})
+  });
+  const data = await resp.json();
+  if (data.success) {
+    window.location.reload();
+  }
+}
+</script>
+</body>
+</html>
