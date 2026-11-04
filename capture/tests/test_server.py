@@ -1164,7 +1164,7 @@ def test_quiz_generate_prompt_asks_for_reasoning_not_fact_recall(monkeypatch):
     text = f"{captured['system']} {captured['prompt']}".lower()
     assert "reasoning" in text
     assert "flashcard" in text
-    assert "never ask for a definition" in text
+    assert "a definition is fair game only when" in text
 
 
 def test_quiz_grade_prompt_does_not_accept_a_fact_as_reasoning(monkeypatch):
