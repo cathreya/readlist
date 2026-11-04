@@ -64,6 +64,10 @@
 
   <section id="items" class="lib-list" aria-live="polite" aria-busy="true"></section>
 
+  <div class="lib-more" id="more-wrap" hidden>
+    <button class="btn" type="button" id="load-more">Load more</button>
+  </div>
+
   <section id="empty" class="empty" hidden>
     <h2>Nothing saved yet</h2>
     <p>
@@ -71,7 +75,7 @@
       here on their own.
     </p>
     <p class="fine">
-      For the existing backlog, run <code>python -m capture.import_legacy</code>.
+      For the existing backlog, run <code>python -m capture.backfill</code>.
     </p>
   </section>
 

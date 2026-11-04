@@ -1615,3 +1615,16 @@ a.lib-title:hover {
     max-width: none;
   }
 }
+
+.lib-more {
+  display: flex;
+  justify-content: center;
+  padding: 1rem 0;
+}
+
+.lib-warn {
+  color: var(--danger);
+  font-size: 0.72rem;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}

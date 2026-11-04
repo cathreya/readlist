@@ -46,21 +46,95 @@ def fetch_updates(token: str, offset: int = 0, timeout: int = 25) -> list[dict]:
     try:
         with urllib.request.urlopen(url, timeout=timeout + 15) as response:
             payload = json.load(response)
-    except urllib.error.HTTPError as exc:
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise _telegram_error(exc) from exc
+
+    if not payload.get("ok"):
+        raise TelegramError(payload.get("description") or "Telegram rejected the poll")
+    return payload.get("result") or []
+
+
+def forward_message(
+    token: str, done_chat_id: str, from_chat_id: str, message_id: int
+) -> dict:
+    return _call(
+        token,
+        "forwardMessage",
+        {
+            "chat_id": done_chat_id,
+            "from_chat_id": from_chat_id,
+            "message_id": message_id,
+        },
+    )
+
+
+def delete_message(token: str, chat_id: str, message_id: int) -> None:
+    _call(token, "deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+
+
+def archive_done(item: dict) -> dict:
+    """Forward a finished item to the done chat, then delete the original.
+
+    Forward first. A failed forward leaves the source intact and the caller can
+    keep the item out of ``done``. A failed delete is reported but the item is
+    already archived, so a retry does not forward it twice.
+    """
+    config = get_telegram_config()
+    token = config["token"]
+    done_chat_id = config["done_chat_id"]
+
+    if not token:
+        return {"ok": False, "skipped": "TELEGRAM_BOT_TOKEN is not set"}
+    if not done_chat_id:
+        return {"ok": False, "skipped": "TELEGRAM_DONE_CHAT_ID is not set"}
+    if item.get("archived_at"):
+        return {"ok": True, "already": True}
+
+    chat_id = str(item.get("chat_id") or "")
+    message_id = item.get("message_id")
+    if not chat_id or not message_id:
+        return {"ok": False, "skipped": "not a Telegram message"}
+    if done_chat_id == chat_id:
+        return {"ok": False, "skipped": "source and done chat are the same"}
+
+    forwarded = forward_message(token, done_chat_id, chat_id, int(message_id))
+    store.mark_reading_archived(int(item["id"]), int(forwarded["message_id"]))
+
+    try:
+        delete_message(token, chat_id, int(message_id))
+    except TelegramError as exc:
+        store.set_reading_archive_error(int(item["id"]), str(exc))
+        return {"ok": True, "forwarded": True, "deleted": False, "error": str(exc)}
+    return {"ok": True, "forwarded": True, "deleted": True}
+
+
+def _call(token: str, method: str, payload: dict, timeout: int = 20) -> dict:
+    request = urllib.request.Request(
+        _API.format(token=token, method=method),
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            result = json.load(response)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise _telegram_error(exc) from exc
+
+    if not result.get("ok"):
+        raise TelegramError(result.get("description") or "Telegram rejected the request")
+    return result.get("result") or {}
+
+
+def _telegram_error(exc: Exception) -> TelegramError:
+    if isinstance(exc, urllib.error.HTTPError):
         detail = ""
         try:
             detail = json.load(exc).get("description", "")
         except (ValueError, OSError):
             pass
-        raise TelegramError(
-            f"Telegram returned {exc.code}: {detail or exc.reason}"
-        ) from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise TelegramError(f"Cannot reach Telegram: {exc}") from exc
-
-    if not payload.get("ok"):
-        raise TelegramError(payload.get("description") or "Telegram rejected the poll")
-    return payload.get("result") or []
+        return TelegramError(f"Telegram returned {exc.code}: {detail or exc.reason}")
+    return TelegramError(f"Cannot reach Telegram: {exc}")
 
 
 def parse_update(update: dict) -> list[dict]:

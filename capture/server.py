@@ -253,18 +253,29 @@ def create_app(db_path: str | None = None) -> Flask:
     # ------------------------------------------------------------------
     @app.get("/api/library")
     def library_index():
+        query = request.args.get("q", "")
+        status = request.args.get("status", "")
+        site = request.args.get("site", "")
+        limit = _int_arg("limit", 200)
+        offset = max(0, _int_arg("offset", 0))
+
         items = store.list_reading_items(
-            query=request.args.get("q", ""),
-            status=request.args.get("status", ""),
-            site=request.args.get("site", ""),
-            limit=_int_arg("limit", 1000),
+            query=query,
+            status=status,
+            site=site,
+            limit=limit,
+            offset=offset,
         )
+        total = store.count_reading_items(query, status, site)
         counts = store.reading_counts()
         return jsonify(
             {
                 "items": items,
                 "count": len(items),
-                "total": counts["total"],
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+                "has_more": offset + len(items) < total,
                 "counts": counts,
                 "sites": store.reading_sites(),
             }
@@ -297,6 +308,10 @@ def create_app(db_path: str | None = None) -> Flask:
         if not isinstance(data, dict):
             return jsonify({"error": "Expected a JSON object"}), 400
 
+        previous = store.get_reading_item(item_id)
+        if previous is None:
+            return jsonify({"error": "Item not found"}), 404
+
         fields = {key: data[key] for key in ("status", "title") if key in data}
         try:
             item = store.update_reading_item(item_id, fields)
@@ -304,7 +319,17 @@ def create_app(db_path: str | None = None) -> Flask:
             return jsonify({"error": str(exc)}), 400
         if item is None:
             return jsonify({"error": "Item not found"}), 404
-        return jsonify({"item": item})
+
+        archive = None
+        if item["status"] == "done" and previous["status"] != "done":
+            try:
+                archive = telegram.archive_done(item)
+            except telegram.TelegramError as exc:
+                store.update_reading_item(item_id, {"status": previous["status"]})
+                return jsonify({"error": f"Could not move it to the done chat: {exc}"}), 502
+            item = store.get_reading_item(item_id)
+
+        return jsonify({"item": item, "archive": archive})
 
     @app.delete("/api/library/<int:item_id>")
     def library_delete(item_id: int):

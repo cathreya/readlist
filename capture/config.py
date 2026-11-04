@@ -1,7 +1,7 @@
 """Configuration for Flashcap.
 
-Deliberately independent of the Lecture Today app so this stays a small,
-self-contained tool. It reads the same ``.env`` file at the project root.
+Self-contained so this stays a small tool. It reads the ``.env`` file at the
+project root.
 
 Environment variables
 ---------------------
@@ -121,6 +121,7 @@ class TelegramConfig(TypedDict):
     enabled: bool
     token: str
     chat_ids: tuple[str, ...]
+    done_chat_id: str
     timeout: int
 
 
@@ -132,6 +133,7 @@ def get_telegram_config() -> TelegramConfig:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     raw_chats = os.getenv("TELEGRAM_CHAT_IDS", "")
     chat_ids = tuple(part.strip() for part in raw_chats.split(",") if part.strip())
+    done_chat_id = os.getenv("TELEGRAM_DONE_CHAT_ID", "").strip()
     poll = os.getenv("FLASHCAP_TELEGRAM_POLL", "1").strip().lower() not in {
         "0",
         "false",
@@ -146,6 +148,7 @@ def get_telegram_config() -> TelegramConfig:
         "enabled": bool(token) and poll,
         "token": token,
         "chat_ids": chat_ids,
+        "done_chat_id": done_chat_id,
         "timeout": max(1, min(timeout, 50)),
     }
 

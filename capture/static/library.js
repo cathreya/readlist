@@ -10,6 +10,9 @@
     site: '',
     counts: { unread: 0, reading: 0, done: 0, dropped: 0, total: 0 },
     sites: [],
+    total: 0,
+    hasMore: false,
+    pageSize: 200,
     loading: true,
   };
 
@@ -17,6 +20,8 @@
   const itemsEl = $('#items');
   const emptyEl = $('#empty');
   const noResultsEl = $('#no-results');
+  const moreWrap = $('#more-wrap');
+  const loadMoreEl = $('#load-more');
   const pillsEl = $('#status-pills');
   const searchEl = $('#search');
   const siteEl = $('#site-filter');
@@ -150,7 +155,7 @@
   // -----------------------------------------------------------------
   // Load + render
   // -----------------------------------------------------------------
-  async function load() {
+  async function load({ append = false } = {}) {
     const token = ++loadToken;
     state.loading = true;
     itemsEl.setAttribute('aria-busy', 'true');
@@ -158,17 +163,21 @@
     if (state.q) params.set('q', state.q);
     if (state.status !== 'all') params.set('status', state.status);
     if (state.site) params.set('site', state.site);
+    params.set('limit', String(state.pageSize));
+    params.set('offset', String(append ? state.items.length : 0));
 
     try {
       const data = await api(`/api/library?${params}`);
       if (token !== loadToken) return;
-      state.items = data.items || [];
+      state.items = append ? state.items.concat(data.items || []) : data.items || [];
       state.counts = data.counts || state.counts;
       state.sites = data.sites || [];
+      state.total = data.total || 0;
+      state.hasMore = Boolean(data.has_more);
     } catch (error) {
       if (token !== loadToken) return;
       notice(error.message, 'err');
-      state.items = [];
+      if (!append) state.items = [];
     }
 
     if (token !== loadToken) return;
@@ -183,6 +192,13 @@
     renderPills();
     renderSites();
     renderItems();
+    renderMore();
+  }
+
+  function renderMore() {
+    const left = Math.max(0, state.total - state.items.length);
+    moreWrap.hidden = !state.hasMore || left === 0;
+    loadMoreEl.textContent = `Load more (${left} left)`;
   }
 
   function renderPills() {
@@ -265,6 +281,15 @@
     meta.append(
       h('span', { class: `status-chip chip-${item.status}`, text: STATUS_LABELS[item.status] || item.status })
     );
+    if (item.archive_error) {
+      meta.append(
+        h('span', {
+          class: 'lib-warn',
+          title: item.archive_error,
+          text: 'archive issue',
+        })
+      );
+    }
 
     const next = NEXT_ACTION[item.status];
     const actions = h('div', { class: 'lib-actions' });
@@ -349,6 +374,8 @@
     load();
   });
 
+  loadMoreEl.addEventListener('click', () => load({ append: true }));
+
   itemsEl.addEventListener('click', async (event) => {
     const button = event.target.closest('[data-action]');
     if (!button) return;
@@ -356,13 +383,17 @@
 
     if (button.dataset.action === 'status') {
       try {
-        await api(`/api/library/${id}`, {
+        const result = await api(`/api/library/${id}`, {
           method: 'PATCH',
           body: JSON.stringify({ status: button.dataset.to }),
         });
+        if (result.archive && result.archive.error) {
+          notice(result.archive.error, 'err');
+        }
         await load();
       } catch (error) {
         notice(error.message, 'err');
+        await load();
       }
       return;
     }
