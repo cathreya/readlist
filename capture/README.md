@@ -178,6 +178,8 @@ The list is newest-first. All filtering is client-side, so it stays fast for a p
 
 **Done list.** Set `TELEGRAM_DONE_CHAT_ID` to your done-list chat. Marking an item `done` forwards the original Telegram message there, then deletes it from the source channel. The forward happens first: if it fails, the item stays in its previous status. A failed delete leaves the item archived and marks the row with an `archive issue` note. Items from the export have no live message, so they only change status locally.
 
+**Undo.** A `done` row shows `Undo`. It reposts the link to the source channel, removes the forwarded copy from the done list, and returns the row to `unread`. If the delete had failed and the source still exists, it only removes the forwarded copy. A failed repost leaves the row `done`.
+
 Links are deduplicated by a canonical URL: tracking parameters, fragments, `www`, and trailing slashes are stripped. Replaying a Telegram update fills missing titles, sites, and descriptions; it never changes a status you set. A message with several links becomes several rows. A text-only message is saved as a note.
 
 Statuses: `unread`, `reading`, `done`, `dropped`.
@@ -429,6 +431,7 @@ All endpoints are unauthenticated. On hermes the server binds loopback and Tails
 | `GET` | `/api/library` | List saved items (`?q=`, `?status=`, `?site=`, `?limit=`, `?offset=`) |
 | `POST` | `/api/library` | Save a link manually |
 | `PATCH` | `/api/library/:id` | Set `status` or `title` |
+| `POST` | `/api/library/:id/undo` | Repost a done item and remove its forwarded copy |
 | `DELETE` | `/api/library/:id` | Remove an item |
 | `GET` | `/practice` | Mobile Practice page |
 | `GET` | `/api/review/next` | Next new/due card + review stats |
