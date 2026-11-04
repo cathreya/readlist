@@ -1145,3 +1145,51 @@ def test_quiz_api_reopening_moves_past_an_unanswered_passage(client, monkeypatch
 
     start_quiz(client)
     assert seen[1].startswith("Passage 2")
+
+
+def test_quiz_generate_prompt_asks_for_reasoning_not_fact_recall(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    captured: dict[str, str] = {}
+
+    def call(config, prompt, system, max_tokens):
+        captured["prompt"] = prompt
+        captured["system"] = system
+        return (
+            '{"question": "Why does the path length change the cost?", '
+            '"kind": "explain", "expected": ["x"], "hints": ["y"]}'
+        )
+
+    monkeypatch.setattr(llm, "_call_llm", call)
+    llm.generate_question("Title", "Heading", "A passage.")
+    text = f"{captured['system']} {captured['prompt']}".lower()
+    assert "reasoning" in text
+    assert "flashcard" in text
+    assert "never ask for a definition" in text
+
+
+def test_quiz_grade_prompt_does_not_accept_a_fact_as_reasoning(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    captured: dict[str, str] = {}
+
+    def call(config, prompt, system, max_tokens):
+        captured["prompt"] = prompt
+        captured["system"] = system
+        return '{"satisfactory": true, "feedback": "ok"}'
+
+    monkeypatch.setattr(llm, "_call_llm", call)
+    llm.grade_answer("Why?", ["because"], "A passage.", "Something.")
+    text = f"{captured['system']} {captured['prompt']}".lower()
+    assert "expected reasoning" in text
+    assert "remembered fact" in text or "correct fact" in text
+
+
+def test_quiz_generate_falls_back_to_the_explain_kind(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setattr(
+        llm,
+        "_call_llm",
+        lambda *args, **kwargs: (
+            '{"question": "Why?", "kind": "trivia", "expected": ["x"], "hints": ["y"]}'
+        ),
+    )
+    assert llm.generate_question("T", "H", "P")["kind"] == "explain"

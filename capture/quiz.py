@@ -14,7 +14,7 @@ MAX_UNIT_CHARS = 1400
 MAX_UNITS = 40
 MAX_ANSWER_CHARS = 2000
 RECALL_EVERY = 4
-QUIZ_KINDS = ("explain", "apply", "compare", "recall")
+QUIZ_KINDS = ("explain", "apply", "compare", "predict")
 FALLBACK_HINT = "Reread the passage and name its main claim in your own words."
 
 
@@ -96,7 +96,7 @@ def build_question(unit: dict[str, str], generated: dict[str, Any]) -> dict[str,
     return {
         "unit_key": unit["key"],
         "heading": unit.get("heading") or "",
-        "kind": generated.get("kind") or "recall",
+        "kind": generated.get("kind") or "explain",
         "text": generated["question"],
         "expected": generated["expected"],
         "hints": generated["hints"],
@@ -154,7 +154,7 @@ def question_view(question: Optional[dict[str, Any]]) -> Optional[dict[str, Any]
         return None
     return {
         "text": question.get("text") or "",
-        "kind": question.get("kind") or "recall",
+        "kind": question.get("kind") or "explain",
         "heading": question.get("heading") or "",
         "attempts": int(question.get("attempts") or 0),
         "hint_level": int(question.get("hint_level") or 0),

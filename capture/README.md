@@ -10,7 +10,7 @@ You can also select text, right-click, and choose **Annotate in Obsidian** to op
 
 `⌘⇧E` is the explicit **Ask the LLM** action: it explains the highlighted passage inline. The explanation is not saved unless you choose **Annotate this**, which opens the annotation popup pre-filled (tagged `ai-explanation`) so you can edit it before it goes into the vault. The LLM is used for **metadata suggestions and explanations**, never for card text.
 
-`⌘⇧Q` is **Quiz me**: it asks one question about a passage above your current scroll position, then grades your written answer. A wrong answer earns a hint and the same question is asked again until the answer is satisfactory. Passages you have not been quizzed on come first; older passages return for recall. Quiz questions are never written as cards.
+`⌘⇧Q` is **Quiz me**: it asks one reasoning question about a passage above your current scroll position, then grades your written answer. A wrong answer earns a hint and the same question is asked again until the answer is satisfactory. Passages you have not been quizzed on come first; older passages return for recall. Quiz questions are never written as cards.
 
 The original Lecture Today app is untouched. This lives in `capture/`, has its own SQLite database, and adds `fsrs` to the project dependencies for scheduling.
 
@@ -167,8 +167,9 @@ No Anki import loop is required. The Anki TSV export remains available as an esc
 
 ## Quiz me
 
-Press **`⌘⇧Q`** while reading any article. Flashcap asks you one question about a passage **above your current scroll position**, then grades your written answer.
+Press **`⌘⇧Q`** while reading any article. Flashcap asks you one **reasoning** question about a passage **above your current scroll position**, then grades your written answer.
 
+- Cards are for atomic facts. The quiz asks why, how, or what follows, so naming the right fact is not enough.
 - Questions come from the part of the article you have actually read. Passages shorter than 200 characters are skipped, and only the 40 most recent read passages are sent.
 - **Wrong answers give a hint and re-ask the same question.** Three hints escalate; a fourth miss shows the expected answer points and keeps the question open until you restate them. **Skip question** is the escape hatch.
 - The panel prefers passages you have **not been quizzed on yet**. Every fourth question is drawn from older material for recall.
