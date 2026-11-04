@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}Flashcap — cards from what you read{% endblock %}
+
+{% block body %}
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a class="brand" href="/">
+      <span class="brand-mark">F</span>
+      flashcap
+      <span class="brand-sub">read → remember</span>
+    </a>
+    <div class="topbar-actions">
+      <a class="btn" href="/practice" id="practice-link">
+        Practice <span class="count-badge" id="practice-count" hidden></span>
+      </a>
+      <a class="btn" href="/quick">Quick capture <kbd>n</kbd></a>
+      <a class="btn btn-primary" href="/export/anki.tsv">Export Anki</a>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="intro">
+    <div>
+      <h1>Cards from what you read</h1>
+      <p class="lede">
+        Press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>K</kbd> on any page. Flashcap grabs the
+        passage, the section, and the source, then opens an editor where you write the card.
+      </p>
+    </div>
+    <div class="stat" aria-live="polite">
+      <span class="stat-number" id="stat-total">—</span>
+      <span class="stat-label" id="stat-week">cards</span>
+    </div>
+  </section>
+
+  <section class="toolbar" aria-label="Search and filter">
+    <div class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <circle cx="11" cy="11" r="7"></circle>
+        <path d="m20 20-3.5-3.5"></path>
+      </svg>
+      <input id="search" type="search" placeholder="Search cards, tags, sources…" autocomplete="off" spellcheck="false" aria-label="Search cards">
+      <kbd class="slash">/</kbd>
+    </div>
+    <div class="pills" id="category-pills"></div>
+  </section>
+
+  <div class="filters" id="filters"></div>
+
+  <section id="cards" class="cards" aria-live="polite" aria-busy="true">
+    <div class="skeleton" aria-hidden="true">
+      <div class="skeleton-line short"></div>
+      <div class="skeleton-line" style="width: 82%"></div>
+      <div class="skeleton-line" style="width: 64%"></div>
+    </div>
+    <div class="skeleton" aria-hidden="true">
+      <div class="skeleton-line short"></div>
+      <div class="skeleton-line" style="width: 74%"></div>
+      <div class="skeleton-line" style="width: 56%"></div>
+    </div>
+  </section>
+
+  <section id="empty" class="empty" hidden>
+    <div class="empty-keys" aria-hidden="true">
+      <kbd>⌘</kbd><kbd>⇧</kbd><kbd>K</kbd>
+    </div>
+    <h2>No cards yet</h2>
+    <p>
+      Install the userscript once, then highlight a sentence on any page and press
+      the shortcut. No highlight? It will use the paragraph you're looking at.
+    </p>
+    <p class="fine" style="margin-top: 0">
+      Cards are for recall. <kbd>⌘⇧L</kbd> opens the annotation popup for
+      Obsidian, and <kbd>⌘⇧E</kbd> explains the highlighted passage inline.
+    </p>
+    <div class="empty-actions">
+      <a class="btn btn-primary" href="/userscript.user.js">Install userscript</a>
+      <a class="btn" href="/quick">Try quick capture</a>
+    </div>
+    <p class="fine">
+      Server running at <code>127.0.0.1</code> · start with
+      <code>python -m capture.server</code>
+    </p>
+  </section>
+
+  <section id="no-results" class="no-results" hidden>
+    Nothing matches that filter. <button class="btn btn-ghost" type="button" id="clear-filters">Clear filters</button>
+  </section>
+</main>
+
+<footer class="footer wrap">
+  <span>Stored locally · LLM suggests tags and explains on request</span>
+  <nav>
+    <a href="/quick">Quick capture</a>
+    <a href="/userscript.user.js">Userscript</a>
+    <a href="/export/anki.tsv">Anki TSV</a>
+    <a href="/export/markdown">Markdown</a>
+  </nav>
+  <span class="footer-status">
+    <span class="status" id="health">connecting…</span>
+    <span class="status" id="obsidian-status">Obsidian: …</span>
+  </span>
+</footer>
+
+<dialog id="edit-dialog" aria-labelledby="edit-title">
+  <form id="edit-form">
+    <div class="dialog-head">
+      <h2 id="edit-title">Edit card</h2>
+      <button class="icon-btn" type="button" data-close aria-label="Close">×</button>
+    </div>
+    <div class="dialog-body">
+      <div class="field">
+        <label for="edit-front">Front</label>
+        <textarea id="edit-front" rows="3" required></textarea>
+      </div>
+      <div class="field">
+        <label for="edit-back">Back</label>
+        <textarea id="edit-back" rows="5" required></textarea>
+      </div>
+      <div class="grid-2">
+        <div class="field">
+          <label for="edit-category">Category</label>
+          <input id="edit-category" type="text" list="category-options" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="edit-tags">Tags</label>
+          <input id="edit-tags" type="text" placeholder="comma, separated" autocomplete="off">
+        </div>
+      </div>
+      <datalist id="category-options"></datalist>
+    </div>
+    <div class="dialog-foot">
+      <span class="meta" id="edit-meta"></span>
+      <div class="dialog-actions">
+        <button class="btn" type="button" data-close>Cancel</button>
+        <button class="btn btn-primary" type="submit" id="edit-save">Save</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/dashboard.js" defer></script>
+{% endblock %}
