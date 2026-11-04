@@ -17,15 +17,28 @@
   p { color: var(--muted); margin-bottom: 1.5rem; }
   .btn { display: inline-block; padding: .75rem 1.5rem; border-radius: 8px; border: 1px solid var(--border); font-size: .95rem; cursor: pointer; background: var(--card); color: var(--text); text-decoration: none; }
   .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .actions { display: flex; gap: .75rem; justify-content: center; flex-wrap: wrap; margin-top: 1.5rem; }
 </style>
 </head>
 <body>
 <div class="container">
   <div class="card">
+    {% if show_classifier_link %}
+    <h1>Almost there.</h1>
+    <p>{{ message }}</p>
+    <p style="color: var(--muted); font-size: .9rem;">Run the classifier to generate topics, difficulty ratings, warmups, and guided questions.</p>
+    <div class="actions">
+      <a href="/setup" class="btn btn-primary">Back to setup</a>
+    </div>
+    {% else %}
     <h1>You did it.</h1>
-    <p>Every item in your list has been completed, skipped, or archived. That's genuinely impressive.</p>
-    <p style="color: var(--muted); font-size: .9rem;">Want more? Add new links via <a href="/setup">Setup</a> or export a fresh copy of your Telegram read list and re-import.</p>
-    <a href="/setup" class="btn btn-primary" style="margin-top:1rem">Add more content</a>
+    <p>Every item in your active list has been completed or skipped. That's genuinely impressive.</p>
+    <p style="color: var(--muted); font-size: .9rem;">Want more? Add new links via Setup, revisit the graveyard, or export a fresh copy of your Telegram read list and re-import.</p>
+    <div class="actions">
+      <a href="/setup" class="btn btn-primary">Add more content</a>
+      <a href="/graveyard" class="btn">Browse graveyard</a>
+    </div>
+    {% endif %}
   </div>
 </div>
 </body>

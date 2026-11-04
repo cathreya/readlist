@@ -42,6 +42,8 @@ from .llm import (
 )
 from .taxonomy import UI_CATEGORIES
 
+from werkzeug.serving import WSGIRequestHandler
+
 
 def create_app(db_path: str | None = None) -> Flask:
     app = Flask(
@@ -77,6 +79,20 @@ def create_app(db_path: str | None = None) -> Flask:
         if request.path.startswith("/api/") or request.path.endswith(".user.js"):
             response.headers.setdefault("Cache-Control", "no-store")
         return response
+
+    @app.before_request
+    def _check_host():
+        """Reject unknown Host headers.
+
+        The local server is reachable from any page in the browser on
+        127.0.0.1; without this, a malicious site can DNS-rebind its own
+        hostname to loopback and talk to the API same-origin.
+        """
+        if request.path.startswith("/static/"):
+            return None
+        if _request_host() not in _allowed_hosts():
+            return jsonify({"error": "Unexpected Host header"}), 403
+        return None
 
     @app.before_request
     def _preflight():
@@ -848,6 +864,26 @@ def _int_arg(name: str, default: int) -> int:
         return default
 
 
+def _request_host() -> str:
+    """Return the Host header's hostname, without a port."""
+    try:
+        return (urlparse(f"//{request.host}").hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def _allowed_hosts() -> set[str]:
+    """Loopback, plus whichever host this server is configured to serve."""
+    hosts = {"127.0.0.1", "localhost", "::1"}
+    public = get_public_url()
+    if public:
+        hosts.add((urlparse(public).hostname or "").lower())
+    bound = get_host()
+    if bound not in ("0.0.0.0", "::"):
+        hosts.add(bound.lower())
+    return {host for host in hosts if host}
+
+
 def _is_local_origin(origin: str) -> bool:
     try:
         parsed = urlparse(origin)
@@ -871,7 +907,18 @@ def _anki_tag(value: object) -> str:
     return "".join(char for char in tag if char.isalnum() or char in "-_:#+/.")[:60]
 
 
+class _QuietRequestHandler(WSGIRequestHandler):
+    """Log the path only: /quick carries the passage in its query string."""
+
+    def log_request(self, code: str | int = "-", size: str | int = "-") -> None:
+        path = getattr(self, "path", "").split("?", 1)[0]
+        command = getattr(self, "command", "-")
+        self.log("info", '"%s %s" %s %s', command, path, code, size)
+
+
 def main() -> None:
+    # The database holds private reading material: create it owner-only.
+    os.umask(0o077)
     host = get_host()
     port = get_port()
     app = create_app()
@@ -895,7 +942,14 @@ def main() -> None:
         print("  telegram:  polling for reading-list links")
     else:
         print("  telegram:  not configured (set TELEGRAM_BOT_TOKEN)")
-    app.run(host=host, port=port, debug=False, threaded=True, use_reloader=False)
+    app.run(
+        host=host,
+        port=port,
+        debug=False,
+        threaded=True,
+        use_reloader=False,
+        request_handler=_QuietRequestHandler,
+    )
 
 
 if __name__ == "__main__":

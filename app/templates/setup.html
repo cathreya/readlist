@@ -12,7 +12,7 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
   .container { max-width: 560px; width: 100%; margin: 2rem; }
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 2.5rem; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 2.5rem; margin-bottom: 1.5rem; }
   h1 { font-size: 1.5rem; margin-bottom: .5rem; }
   p { color: var(--muted); margin-bottom: 1.5rem; }
   label { display: block; font-weight: 600; margin: 1rem 0 .25rem; }
@@ -22,11 +22,19 @@
   .btn { padding: .75rem 1.5rem; border-radius: 8px; border: 1px solid var(--border); font-size: .95rem; cursor: pointer; background: var(--card); color: var(--text); }
   .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); margin-top: 1.5rem; width: 100%; }
   .btn-primary:hover { opacity: .9; }
+  .btn-secondary { width: 100%; margin-top: .5rem; }
   .note { font-size: .8rem; color: var(--muted); margin-top: .25rem; }
   .progress { display: none; margin-top: 1rem; }
   .progress.active { display: block; }
   .progress-bar { background: var(--border); border-radius: 8px; height: 8px; margin-top: .5rem; }
   .progress-fill { background: var(--accent); border-radius: 8px; height: 8px; width: 0%; transition: width .3s; }
+  .add-url { margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border); }
+  .add-url h2 { font-size: 1.1rem; margin-bottom: .75rem; }
+  .actions-row { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: 1rem; }
+  .actions-row a { font-size: .85rem; color: var(--muted); }
+  .actions-row a:hover { color: var(--text); }
+  .success { color: var(--accent); font-size: .9rem; margin-top: .5rem; }
+  .error { color: #c62828; font-size: .9rem; margin-top: .5rem; }
 </style>
 </head>
 <body>
@@ -58,6 +66,19 @@
       <p id="progress-text">Starting pipeline...</p>
       <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
     </div>
+
+    <div class="add-url">
+      <h2>Or add a single link</h2>
+      <p class="note">Paste a URL to fetch metadata and add it directly.</p>
+      <input type="text" id="add-url-input" placeholder="https://...">
+      <button class="btn btn-secondary" onclick="handleAddUrl()">Add URL</button>
+      <div id="add-url-message"></div>
+    </div>
+
+    <div class="actions-row">
+      <a href="/graveyard">Browse graveyard & errors</a>
+      <a href="/">Today's lecture →</a>
+    </div>
   </div>
 </div>
 
@@ -76,6 +97,38 @@ async function handleSetup(e) {
     }
   } catch (err) {
     document.getElementById('progress-text').textContent = 'Error: ' + err.message;
+  }
+}
+
+async function handleAddUrl() {
+  const input = document.getElementById('add-url-input');
+  const msg = document.getElementById('add-url-message');
+  const url = input.value.trim();
+  if (!url) {
+    msg.className = 'error';
+    msg.textContent = 'Please enter a URL.';
+    return;
+  }
+  try {
+    const resp = await fetch('/add', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url})
+    });
+    const data = await resp.json();
+    if (data.success) {
+      msg.className = 'success';
+      msg.textContent = data.status === 'dead'
+        ? 'Added (link appears dead — you can revive it from the graveyard).'
+        : 'Added! Next step: run python classifier.py';
+      input.value = '';
+    } else {
+      msg.className = 'error';
+      msg.textContent = data.error || 'Failed to add URL.';
+    }
+  } catch (err) {
+    msg.className = 'error';
+    msg.textContent = 'Error: ' + err.message;
   }
 }
 </script>

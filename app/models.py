@@ -31,9 +31,11 @@ def init_db():
             chunk_index INTEGER,
             parent_item_id INTEGER REFERENCES items(id),
             local_file_path TEXT,
+            prerequisite_topics TEXT,
+            needs_chunking INTEGER DEFAULT 0,
             warmup TEXT,
             guided_questions TEXT,
-            status TEXT DEFAULT 'unread',
+            status TEXT DEFAULT 'unread' CHECK(status IN ('unread', 'in_progress', 'completed', 'skipped', 'dead', 'error')),
             error_reason TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         );

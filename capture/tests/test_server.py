@@ -752,6 +752,35 @@ def test_queue_mode_queues_uri_without_opening(client, monkeypatch, obsidian_stu
     assert client.get("/api/obsidian/pending").get_json()["count"] == 0
 
 
+def test_api_rejects_unexpected_host(client):
+    assert client.get("/api/health", headers={"Host": "evil.example:8765"}).status_code == 403
+    assert client.get("/api/health").status_code == 200
+
+
+def test_note_agent_refuses_unexpected_uris(monkeypatch):
+    notes = [
+        {"id": 1, "uri": "file:///etc/passwd", "path": "Reading/A.md"},
+        {"id": 2, "uri": "obsidian://new?ok", "path": "../escape.md"},
+        {"id": 3, "uri": "obsidian://new?ok", "path": "Reading/A.md"},
+    ]
+    acked: list[int] = []
+    opened: list[str] = []
+
+    monkeypatch.setattr(note_agent, "pending", lambda: notes)
+    monkeypatch.setattr(note_agent, "ack", lambda queue_id: acked.append(queue_id))
+    monkeypatch.setattr(note_agent.time, "sleep", lambda _seconds: None)
+
+    def fake_open(args, **_kwargs):
+        opened.append(args[-1])
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(note_agent.subprocess, "run", fake_open)
+
+    assert note_agent.drain() == 1
+    assert opened == ["obsidian://new?ok"]
+    assert acked == [1, 2, 3]
+
+
 def test_note_agent_drains_queue_in_order(monkeypatch):
     notes = [
         {"id": 1, "uri": "obsidian://new?one", "path": "Reading/A.md"},

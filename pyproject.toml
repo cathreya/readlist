@@ -1,0 +1,20 @@
+[project]
+name = "lecture-today"
+version = "0.1.0"
+description = "Anti-feed tutor — turns a Telegram read list into a daily curriculum"
+requires-python = ">=3.11"
+dependencies = [
+    "flask>=3.0",
+    "beautifulsoup4>=4.12",
+    "requests>=2.31",
+    "fsrs>=6.3",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.39"]
+openai = ["openai>=1.0"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0",
+]

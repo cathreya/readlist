@@ -186,6 +186,13 @@ def init_db(path: Optional[str] = None) -> None:
     finally:
         conn.close()
 
+    # The database holds private reading material; keep it owner-only.
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            os.chmod(db_path + suffix, 0o600)
+        except OSError:
+            pass
+
 
 def _db_path() -> str:
     try:

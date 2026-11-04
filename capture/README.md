@@ -130,7 +130,24 @@ Firefox's built-in PDF viewer is a privileged page — userscripts can't run ins
 3. Paste (`⌘V`), add the paper/chapter title and URL if you want provenance.
 4. Write the **Front** and **Back**. **Suggest tags & category** fills the metadata from the passage; edit anything, then press **Save card** (`⌘↵`). Fill **Your annotation** and click **Save annotation** for the Obsidian record.
 
-The quick page also has a **Capture highlight** bookmarklet. Drag it to your bookmarks bar; clicking it after selecting text on a normal page opens the same form pre-filled. (In the PDF viewer itself, bookmarklets may be blocked; the copy/paste route always works.)
+The quick page also has a **Capture highlight** bookmarklet. Drag it to your bookmarks bar; clicking it after selecting text on a normal page opens the same form pre-filled. (In the PDF viewer itself, bookmarklets may be blocked; the copy/paste route always works.) The page clears the `?text=` query from the address bar as soon as it loads, so the passage is not left in browser history.
+
+**Write it where you are (native panel).** `capture/mac/` is a small menu-bar app for exactly this case. It owns the UI instead of a web page, so nothing changes tabs:
+
+```sh
+cd capture/mac && ./build.sh && open FlashcapCapture.app
+```
+
+Select the passage, press `⌘⇧J`, type front and back in the floating panel, `⌘↵`. It POSTs straight to `/api/capture`; no browser is involved. The first capture asks for **Accessibility** access (System Settings → Privacy & Security → Accessibility) — that is how it reads the selection. Add the app to **Login Items** so it is always there.
+
+- `⌘⇧J` is deliberate: `⌘⇧K` belongs to the userscript, so the two never fire together on a normal page.
+- Point it at the box with `defaults write local.flashcap.capture base https://hermes.taila17c7c.ts.net` (default `http://127.0.0.1:8765`).
+- It only reads selections from reading apps (Firefox, Safari, Chrome, Preview, Books, Kindle, Adobe Reader, PDF Expert, Skim, Zotero). Override with `defaults write local.flashcap.capture allowedApps -array org.mozilla.firefox com.apple.Preview`, or allow every app with `defaults write local.flashcap.capture allowAllApps -bool true`. The menu shows the current toggle and destination host.
+- Secure text fields are refused, and the clipboard is never touched. If Accessibility is unavailable or the page exposes no selection, the panel opens empty for you to paste into.
+- Captures are refused unless the destination is loopback (`127.0.0.1`, `localhost`) or an HTTPS Tailscale address (`.ts.net`, `100.64.0.0/10`, or `fd7a:115c:a1e0::/48`). Override the network check with `defaults write local.flashcap.capture allowAnyHost -bool true`.
+- `--selftest` refuses to write a test card anywhere except loopback.
+
+`capture/flashcap_quick.py` remains the no-install fallback: it opens `/quick` pre-filled (`pbpaste | flashcap_quick.py`, or hand it the text from a Shortcut's **Run Shell Script** with input to stdin).
 
 ### 3. YouTube
 
@@ -348,7 +365,7 @@ FLASHCAP_TELEGRAM_TIMEOUT=25  # long-poll seconds
 
 The server speaks the Anthropic Messages API (`POST {base_url}/v1/messages`). Anything that exposes that shape works, including Anthropic itself and DeepSeek's compatibility endpoint. Reasoning models that return `thinking` blocks before the text block are supported.
 
-**Privacy:** cards, review history, and queued note URIs are stored in `capture/flashcards.db` (on hermes in the reference deployment). Opening the card editor sends the passage to the LLM for **category/tags only**; `⌘⇧E` sends it for an explanation. Saved card text, annotations, review, and note writing stay local. If no API key is configured, you can still write cards and annotations manually; only the suggestions and explanations are unavailable.
+**Privacy:** cards, review history, and queued note URIs are stored in `capture/flashcards.db` (on hermes in the reference deployment). The **Mac app does not call the LLM**: it only POSTs to `/api/capture`. On the web path, opening the card editor sends the passage and surrounding context to the LLM for **category/tags only**, and `⌘⇧E` sends it for an explanation. Saved card text, annotations, review, and note writing stay local. If no API key is configured, you can still write cards and annotations manually; only the suggestions and explanations are unavailable.
 
 ---
 
@@ -396,7 +413,7 @@ For a purely local setup, the old LaunchAgent approach still works: run `./captu
 
 ## API
 
-All endpoints are unauthenticated. On hermes the server binds loopback and Tailscale Serve terminates HTTPS for the tailnet; the tailnet is the auth boundary — do not expose it publicly without auth. CORS reflects only localhost origins; the userscript uses Greasemonkey's privileged request API.
+All endpoints are unauthenticated. On hermes the server binds loopback and Tailscale Serve terminates HTTPS for the tailnet; the tailnet is the auth boundary — do not expose it publicly without auth. CORS reflects only localhost origins; the userscript uses Greasemonkey's privileged request API. Every request must also carry an expected `Host` (loopback, or `FLASHCAP_PUBLIC_URL`), which stops a malicious webpage from DNS-rebinding its own hostname to a local server. Set `FLASHCAP_PUBLIC_URL` whenever you run behind Tailscale Serve, or requests will be rejected.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -469,6 +486,10 @@ capture/
   obsidian.py          reading-note Markdown + obsidian:// handoff/queue
   note_agent.py        Mac-side queue flusher (launchd)
   install-note-agent.sh
+  flashcap_quick.py    opens /quick with a selected passage (PDF fallback)
+  mac/                 menu-bar capture app (Swift)
+  telegram.py          Telegram long-poll ingest for the reading list
+  library.py           reading-list URL canonicalisation
   taxonomy.py          categories + tag normalisation
   config.py            .env + host/port/db configuration
   static/

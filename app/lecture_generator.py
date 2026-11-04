@@ -223,7 +223,16 @@ def build_lecture_response(item: dict, db) -> dict:
         JSON-serialisable dictionary matching the lecture API contract.
     """
     # --- Content ------------------------------------------------------------
-    title = item.get("title") or item.get("url", "Untitled")
+    title = item.get("title")
+    url = item.get("url", "")
+    if not title:
+        if url.startswith("note://"):
+            desc = item.get("description", "")
+            title = (desc[:60] + "...") if len(desc) > 60 else desc
+            if not title:
+                title = "Saved Note"
+        else:
+            title = url or "Untitled"
     warmup = item.get("warmup") or _WARMUP_FALLBACK_TEMPLATE.format(title=title)
 
     guided_raw = item.get("guided_questions")
@@ -248,6 +257,7 @@ def build_lecture_response(item: dict, db) -> dict:
         warmup = f"{warmup}\n\n{connection}"
 
     # --- Content metadata ---------------------------------------------------
+    import os
     content_type = item.get("content_type") or "article"
     url = item.get("url") or ""
     local_file = item.get("local_file_path")
@@ -256,7 +266,8 @@ def build_lecture_response(item: dict, db) -> dict:
     if url:
         content_block["url"] = url
     if local_file:
-        content_block["local_file"] = local_file
+        # Serve via /files/ route — only pass the basename
+        content_block["local_file"] = os.path.basename(local_file)
 
     # --- Exit ticket --------------------------------------------------------
     exit_ticket_prompt = (
@@ -268,7 +279,7 @@ def build_lecture_response(item: dict, db) -> dict:
     estimated_minutes = item.get("estimated_minutes") or 15
 
     # --- Progress -----------------------------------------------------------
-    progress = _compute_progress(db)
+    progress = _compute_progress(db, item)
 
     return {
         "item_id": item["id"],
@@ -301,9 +312,16 @@ def _get_recent_topics(db, limit: int = 3) -> list[str]:
     return [row["topic"] for row in cursor.fetchall() if row["topic"]]
 
 
-def _compute_progress(db) -> dict:
-    """Return ``{completed, total, percent}`` for the user's curriculum."""
-    cursor = db.execute("SELECT COUNT(*) FROM items")
+def _compute_progress(db, item: dict) -> str:
+    """Return a human-readable progress string for the lecture card."""
+    chunk_total = item.get("chunk_total") or 1
+    chunk_index = item.get("chunk_index")
+
+    if chunk_total > 1 and chunk_index is not None:
+        return f"Session {chunk_index} of {chunk_total}"
+
+    # Overall curriculum progress
+    cursor = db.execute("SELECT COUNT(*) FROM items WHERE status != 'dead'")
     total = cursor.fetchone()[0]
 
     cursor = db.execute(
@@ -312,9 +330,4 @@ def _compute_progress(db) -> dict:
     completed = cursor.fetchone()[0]
 
     percent = round((completed / total * 100) if total > 0 else 0, 1)
-
-    return {
-        "completed": completed,
-        "total": total,
-        "percent": percent,
-    }
+    return f"{completed} / {total} completed ({percent}%)"

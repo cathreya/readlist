@@ -55,14 +55,17 @@ def get_available_items(db) -> list[dict]:
     cursor = db.execute(
         """
         SELECT i.* FROM items i
-        WHERE i.id NOT IN (
-            SELECT item_id FROM sessions WHERE completed_at IS NOT NULL
-        )
-        AND NOT EXISTS (
-            SELECT 1 FROM skips s
-            WHERE s.item_id = i.id
-              AND (s.resurface_after IS NULL OR s.resurface_after > datetime('now'))
-        )
+        WHERE i.status NOT IN ('completed', 'dead', 'error', 'in_progress')
+          AND i.difficulty IS NOT NULL
+          AND i.id NOT IN (
+              SELECT item_id FROM sessions WHERE completed_at IS NOT NULL
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM skips s
+              WHERE s.item_id = i.id
+                AND (s.resurface_after IS NULL OR s.resurface_after > datetime('now'))
+          )
+          AND (i.error_reason IS NULL OR i.error_reason != 'graveyard')
         """
     )
     return [_dict_from_row(row) for row in cursor.fetchall()]

@@ -14,10 +14,13 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 REMOTE = os.getenv("FLASHCAP_REMOTE_URL", "https://hermes.taila17c7c.ts.net").rstrip("/")
 DELAY = float(os.getenv("FLASHCAP_AGENT_DELAY", "1.2"))
+MAX_URI_CHARS = 100_000
+ALLOWED_URI_PREFIXES = ("obsidian://new?", "obsidian://open?")
 
 
 def _request(method: str, path: str, body: dict | None = None) -> dict:
@@ -40,6 +43,23 @@ def ack(queue_id: int) -> None:
     _request("POST", "/api/obsidian/ack", {"id": queue_id})
 
 
+def _safe_uri(uri: str) -> bool:
+    """Only let the server hand us Obsidian note URIs, nothing else."""
+    if not isinstance(uri, str) or len(uri) > MAX_URI_CHARS:
+        return False
+    if not uri.startswith(ALLOWED_URI_PREFIXES):
+        return False
+    parsed = urllib.parse.urlsplit(uri)
+    return parsed.scheme == "obsidian" and parsed.netloc in ("new", "open")
+
+
+def _safe_path(path: str) -> bool:
+    """Keep generated notes relative and inside the vault."""
+    if not path or path.startswith("/"):
+        return False
+    return ".." not in path.replace("\\", "/").split("/")
+
+
 def drain() -> int:
     notes = pending()
     if not notes:
@@ -51,6 +71,14 @@ def drain() -> int:
         queue_id = note.get("id")
         uri = note.get("uri")
         if queue_id is None or not uri:
+            continue
+
+        if not _safe_uri(uri) or not _safe_path(str(note.get("path") or "")):
+            print(
+                f"note agent: refusing unexpected URI for {queue_id}",
+                file=sys.stderr,
+            )
+            ack(queue_id)
             continue
 
         try:

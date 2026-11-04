@@ -352,21 +352,30 @@ class TestSkip:
         conn.close()
         assert status == "skipped"
 
-    def test_skip_too_long_sets_needs_chunking(self, client):
-        """Skipping with reason 'too_long' sets error_reason='needs_chunking'."""
+    def test_skip_too_long_triggers_chunking(self, client):
+        """Skipping with reason 'too_long' chunks the item and returns first chunk."""
         import models
-        client.post(
+        resp = client.post(
             "/skip",
             data=json.dumps({"item_id": 1, "reason": "too_long"}),
             content_type="application/json",
         )
         conn = models.get_db()
         row = conn.execute(
-            "SELECT status, error_reason FROM items WHERE id=1"
+            "SELECT status, error_reason, chunk_total FROM items WHERE id=1"
         ).fetchone()
+        # Original item is completed; chunks were created
+        assert row["status"] == "completed"
+        assert row["chunk_total"] > 1
+        # A chunk child should exist and be in_progress
+        chunk = conn.execute(
+            "SELECT status FROM items WHERE parent_item_id=1"
+        ).fetchone()
+        assert chunk["status"] == "in_progress"
         conn.close()
-        assert row["status"] == "unread"
-        assert row["error_reason"] == "needs_chunking"
+        # Response should be the next lecture (the first chunk)
+        data = resp.get_json()
+        assert data["next"] == "lecture"
 
     def test_returns_next_lecture_json(self, client):
         resp = client.post(

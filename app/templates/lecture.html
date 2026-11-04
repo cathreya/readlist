@@ -79,11 +79,17 @@
     {% endif %}
 
     <div class="section-label">Guided Questions</div>
+    {% if lecture["guided_questions"] %}
     <ul class="questions">
     {% for q in lecture["guided_questions"] %}
       <li>{{ q }}</li>
     {% endfor %}
     </ul>
+    {% else %}
+    <p style="color: var(--muted); font-size: .9rem; padding: .5rem 0;">
+      No guided questions yet — read actively and note what stands out.
+    </p>
+    {% endif %}
 
     <div class="section-label">Estimated time: {{ lecture["estimated_minutes"] }} min</div>
 
