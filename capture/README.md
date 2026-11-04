@@ -149,6 +149,20 @@ The list is newest-first. All filtering is client-side, so it stays fast for a p
 
 ---
 
+## Reading list
+
+`/library` is the shared backlog: every link you saved in the Telegram chat, newest first. It is the input side of the deck, and the one place to see what is still unread.
+
+- **Telegram.** Create a bot with @BotFather. If it lives in a group, disable privacy mode there, otherwise it only sees commands. Add it to the chat and put the token in `.env` as `TELEGRAM_BOT_TOKEN`. The server long-polls `getUpdates` on a background thread, so there is no webhook and no new public port. Set `TELEGRAM_CHAT_IDS` to accept only your chat.
+- **Manual.** Paste a link into the box on `/library`.
+- **Backfill.** `python -m capture.import_legacy` copies the Lecture Today backlog from `lecture_today.db` once. It opens that file read-only and is safe to rerun.
+
+Links are deduplicated by a canonical URL: tracking parameters, fragments, `www`, and trailing slashes are stripped. Replaying a Telegram update fills missing titles, sites, and descriptions; it never changes a status you set. A message with several links becomes several rows. A text-only message is saved as a note.
+
+Statuses: `unread`, `reading`, `done`, `dropped`.
+
+---
+
 ## Practice
 
 Open **Practice** from the top bar (the badge shows how many cards are ready). Works on the phone through Tailscale.
@@ -302,6 +316,11 @@ FLASHCAP_OBSIDIAN_FOLDER=Reading
 FLASHCAP_OBSIDIAN_MODE=queue
 FLASHCAP_NOTE_CONTEXT=0      # 1 = include a 400-char context excerpt
 FLASHCAP_TIMEZONE=Europe/Dublin   # day headings use this timezone
+
+TELEGRAM_BOT_TOKEN=...       # enables the reading-list poller
+TELEGRAM_CHAT_IDS=-100...     # optional allowlist, comma separated
+FLASHCAP_TELEGRAM_POLL=1      # 0 to run the server without the poller
+FLASHCAP_TELEGRAM_TIMEOUT=25  # long-poll seconds
 ```
 
 The server speaks the Anthropic Messages API (`POST {base_url}/v1/messages`). Anything that exposes that shape works, including Anthropic itself and DeepSeek's compatibility endpoint. Reasoning models that return `thinking` blocks before the text block are supported.
@@ -365,7 +384,12 @@ All endpoints are unauthenticated. On hermes the server binds loopback and Tails
 | `PATCH` | `/api/cards/:id` | Edit `front`, `back`, `category`, `tags`, `quote`, `hint` |
 | `DELETE` | `/api/cards/:id` | Delete a card |
 | `GET` | `/api/meta` | Counts, categories, tags, LLM status |
-| `GET` | `/api/health` | Health + card count |
+| `GET` | `/api/health` | Health, card count, Telegram poller status |
+| `GET` | `/library` | Reading-list page |
+| `GET` | `/api/library` | List saved items (`?q=`, `?status=`, `?site=`, `?limit=`) |
+| `POST` | `/api/library` | Save a link manually |
+| `PATCH` | `/api/library/:id` | Set `status` or `title` |
+| `DELETE` | `/api/library/:id` | Remove an item |
 | `GET` | `/practice` | Mobile Practice page |
 | `GET` | `/api/review/next` | Next new/due card + review stats |
 | `POST` | `/api/review/:id` | Grade a card (`again` / `hard` / `good` / `easy`) |
