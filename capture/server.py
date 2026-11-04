@@ -23,9 +23,15 @@ from flask import (
     request,
 )
 
-from . import __version__, obsidian, store
+from . import __version__, obsidian, quiz, store
 from .config import get_db_path, get_host, get_llm_config, get_port, get_public_url
-from .llm import LLMError, explain_passage, suggest_metadata
+from .llm import (
+    LLMError,
+    explain_passage,
+    generate_question,
+    grade_answer,
+    suggest_metadata,
+)
 from .taxonomy import UI_CATEGORIES
 
 
@@ -230,6 +236,172 @@ def create_app(db_path: str | None = None) -> Flask:
                 "model": config["model"],
             }
         )
+
+    # ------------------------------------------------------------------
+    # Quiz me (scoped to what the reader has read)
+    # ------------------------------------------------------------------
+    @app.post("/api/quiz/start")
+    def quiz_start():
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"error": "Expected a JSON object"}), 400
+
+        url = _text(data.get("url"), 2000)
+        if urlparse(url).scheme not in ("http", "https"):
+            return jsonify({"error": "A valid article URL is required"}), 400
+
+        units = quiz.normalize_units(data.get("units"))
+        if not units:
+            return jsonify(
+                {
+                    "error": (
+                        "Read a little further before quizzing. No passage above "
+                        "your position is long enough yet."
+                    )
+                }
+            ), 422
+
+        title = _text(data.get("page_title"), 400)
+        coverage = store.quiz_coverage(url)
+        unit = quiz.select_unit(units, [], coverage, 0)
+        if unit is None:
+            return jsonify({"error": "Nothing to quiz yet"}), 422
+
+        try:
+            generated = generate_question(title, unit["heading"], unit["text"])
+        except LLMError as exc:
+            return jsonify({"error": str(exc)}), 502
+
+        session = store.create_quiz_session(
+            url, title, units, _int_value(data.get("total_units"), len(units))
+        )
+        question = quiz.build_question(unit, generated)
+        store.record_quiz_coverage(url, unit["key"])
+        session = (
+            store.update_quiz_session(session["id"], {"question": question}) or session
+        )
+        return jsonify(
+            {
+                "session": quiz.session_view(session, coverage),
+                "question": quiz.question_view(question),
+            }
+        ), 201
+
+    @app.post("/api/quiz/<int:session_id>/answer")
+    def quiz_answer(session_id: int):
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"error": "Expected a JSON object"}), 400
+
+        session = store.get_quiz_session(session_id)
+        if session is None:
+            return jsonify({"error": "Quiz session not found"}), 404
+
+        question = session.get("question")
+        if not question:
+            return jsonify({"error": "This session has no open question"}), 409
+
+        answer = _text(data.get("answer"), quiz.MAX_ANSWER_CHARS)
+        if not answer:
+            return jsonify({"error": "Write an answer first"}), 400
+
+        unit = _quiz_unit(session, question.get("unit_key"))
+        if unit is None:
+            return jsonify({"error": "The question's passage is missing"}), 409
+
+        try:
+            grade = grade_answer(
+                question.get("text", ""),
+                question.get("expected") or [],
+                unit["text"],
+                answer,
+                revealed=bool(question.get("revealed")),
+                source_title=session.get("source_title") or "",
+            )
+        except LLMError as exc:
+            # The attempt is not consumed: the same question stays open.
+            return jsonify({"error": str(exc)}), 502
+
+        updated, reply = quiz.apply_grade(question, grade)
+        payload: dict = {
+            "verdict": reply["verdict"],
+            "feedback": reply["feedback"],
+            "hint": reply["hint"],
+            "revealed": reply["revealed"],
+        }
+        if reply.get("answer"):
+            payload["answer"] = reply["answer"]
+
+        if reply["verdict"] == "satisfactory":
+            store.record_quiz_coverage(
+                session["source_url"], question["unit_key"], "satisfactory"
+            )
+            session = store.update_quiz_session(
+                session_id,
+                {
+                    "question": None,
+                    "asked": list(session.get("asked") or []) + [question["unit_key"]],
+                    "asked_count": int(session.get("asked_count") or 0) + 1,
+                    "satisfied_count": int(session.get("satisfied_count") or 0) + 1,
+                },
+            ) or session
+            payload.update(_quiz_advance(session))
+        else:
+            session = store.update_quiz_session(
+                session_id, {"question": updated}
+            ) or session
+            payload.update(
+                {
+                    "question": quiz.question_view(updated),
+                    "finished": False,
+                    "session": quiz.session_view(
+                        session, store.quiz_coverage(session["source_url"])
+                    ),
+                }
+            )
+
+        return jsonify(payload)
+
+    @app.post("/api/quiz/<int:session_id>/skip")
+    def quiz_skip(session_id: int):
+        session = store.get_quiz_session(session_id)
+        if session is None:
+            return jsonify({"error": "Quiz session not found"}), 404
+
+        question = session.get("question")
+        if not question:
+            return jsonify({"error": "This session has no open question"}), 409
+
+        store.record_quiz_coverage(
+            session["source_url"], question["unit_key"], "skipped"
+        )
+        session = store.update_quiz_session(
+            session_id,
+            {
+                "question": None,
+                "asked": list(session.get("asked") or []) + [question["unit_key"]],
+                "asked_count": int(session.get("asked_count") or 0) + 1,
+            },
+        ) or session
+        return jsonify(_quiz_advance(session))
+
+    @app.post("/api/quiz/<int:session_id>/next")
+    def quiz_next(session_id: int):
+        session = store.get_quiz_session(session_id)
+        if session is None:
+            return jsonify({"error": "Quiz session not found"}), 404
+
+        if session.get("question"):
+            return jsonify(
+                {
+                    "question": quiz.question_view(session["question"]),
+                    "finished": False,
+                    "session": quiz.session_view(
+                        session, store.quiz_coverage(session["source_url"])
+                    ),
+                }
+            )
+        return jsonify(_quiz_advance(session))
 
     # ------------------------------------------------------------------
     # Obsidian reading records (separate from flashcards)
@@ -478,6 +650,64 @@ def _capture_payload(data: dict) -> dict[str, str]:
         "source_type": _text(data.get("source_type"), 40) or "web",
         "hint": _text(data.get("hint"), 500),
     }
+
+
+def _quiz_unit(session: dict, unit_key: object) -> dict | None:
+    for unit in session.get("units") or []:
+        if unit.get("key") == unit_key:
+            return unit
+    return None
+
+
+def _quiz_advance(session: dict) -> dict:
+    """Open the next question in *session*, or finish when nothing is left."""
+    coverage = store.quiz_coverage(session["source_url"])
+    unit = quiz.select_unit(
+        session.get("units") or [],
+        session.get("asked") or [],
+        coverage,
+        int(session.get("asked_count") or 0),
+    )
+
+    if unit is None:
+        current = store.update_quiz_session(session["id"], {"question": None}) or session
+        return {
+            "question": None,
+            "finished": True,
+            "session": quiz.session_view(current, coverage),
+        }
+
+    try:
+        generated = generate_question(
+            session.get("source_title") or "", unit["heading"], unit["text"]
+        )
+    except LLMError as exc:
+        # Keep the session open so the panel can offer "Try another question".
+        current = store.update_quiz_session(session["id"], {"question": None}) or session
+        return {
+            "question": None,
+            "finished": False,
+            "notice": str(exc),
+            "session": quiz.session_view(current, coverage),
+        }
+
+    question = quiz.build_question(unit, generated)
+    store.record_quiz_coverage(session["source_url"], unit["key"])
+    current = (
+        store.update_quiz_session(session["id"], {"question": question}) or session
+    )
+    return {
+        "question": quiz.question_view(question),
+        "finished": False,
+        "session": quiz.session_view(current, coverage),
+    }
+
+
+def _int_value(value: object, default: int) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
 
 
 def _card_note_payload(card: dict) -> dict[str, str]:
